@@ -1,23 +1,25 @@
 # OpenFLORA
 
 OpenFLORA is an MILP floorplanner for FPGA partial reconfiguration that
-runs on an open solver.  I wrote it because I wanted to use FLORA's
-floorplanning formulation and found I couldn't, cleanly: the published
-FLORA and DART implementations solve with Gurobi, which is commercial
-(DART's install docs pin Gurobi 8.1 and warn that later versions break
-the build), DART itself is GPLv3, and the public FLORA repository has no
-license file at all.  Nobody should need a commercial solver license to
-floorplan a partial-reconfiguration design.  So this is a clean-room
-reimplementation from the papers, MIT-licensed, solving with
+runs on an open solver.  You give it per-region resource demands and it
+places each reconfigurable region as a legal rectangle on a measured
+device model, then writes out pblock site ranges and Vivado XDC
+constraints.  It can minimize FLORA's wasted-resources metric, or the
+number of configuration frames — which is what your partial bitstream
+size and your reconfiguration time are actually made of.
+
+It is a clean-room reimplementation of FLORA's floorplanning
+formulation, built from the published papers and public documentation
+and MIT-licensed, solving with
 [HiGHS](https://github.com/ERGO-Code/HiGHS) (also MIT) — nothing to
 license, nothing to pin.
 
-You give it per-region resource demands and it places each
-reconfigurable region as a legal rectangle on a measured device model,
-then writes out pblock site ranges and Vivado XDC constraints.  It can
-minimize FLORA's wasted-resources metric, or — the reason I bothered —
-the number of configuration frames, which is what your partial bitstream
-size and your reconfiguration time are actually made of.
+The motivation is licensing.  The published FLORA and DART
+implementations solve with Gurobi, which is commercial (DART's install
+docs pin Gurobi 8.1 and warn that later versions break the build), DART
+itself is GPLv3, and the public FLORA repository has no license file at
+all.  Floorplanning a partial-reconfiguration design shouldn't require a
+commercial solver license.
 
 ## About the name
 
@@ -29,12 +31,9 @@ full clock-region height — as first-class constraints instead of
 afterthoughts.  DART later built a full DPR design flow around it.
 OpenFLORA is an independent, from-the-papers reimplementation and is not
 affiliated with or endorsed by the FLORA/DART authors, their lab, or
-AMD/Xilinx.  I picked the name so that people who know FLORA can find a
-version they can run, and I kept it cheap to change: it lives in
-`pyproject.toml`, this README, the `src/openflora/` directory, and one
-import in `tests/conftest.py`.  If you are one of the original authors:
-hello, and thank you.  If you would rather I rename it, or want to
-coordinate on anything, get in touch and I will.
+AMD/Xilinx.  The name is meant to help people who already know FLORA
+find a version they can run; anyone from the original projects who would
+like to coordinate is welcome to reach out.
 
 One note on capitalization: the project is OpenFLORA, but the Python
 package and the command are plain lowercase `openflora`, following
@@ -57,11 +56,11 @@ units), DSP — and the optional sixth is measured occupied slices:
     rp0,2874,2026,0,12,1127
     rp1,2972,2026,0,12,1264
 
-Measure the `slices` column if you possibly can.  Without it the solver
-falls back to ceil(lut/4), which assumes perfect packing.  A placement
-failure on real hardware showed my modules packing at 2.35–2.8 LUTs per
-slice, because a slice holds only one unique control set.  The number
-comes straight from `report_utilization -pblocks` on a routed
+Providing the measured `slices` column is strongly recommended.  Without
+it the solver falls back to ceil(lut/4), which assumes perfect packing.
+A placement failure on real hardware showed modules packing at 2.35–2.8
+LUTs per slice, because a slice holds only one unique control set.  The
+value can be obtained from `report_utilization -pblocks` on a routed
 checkpoint ("Slice" row); `examples/lenet_pynq/README.md` walks through
 the whole measurement recipe.
 
@@ -97,10 +96,10 @@ The MILP is FLORA's formulation restated with column-cover binaries:
 rectangles on (column x clock-region) axes, per-type coverage >= demand,
 region no-overlap, forbidden cells unspannable, interconnect pairs never
 split, full clock-region height.  The restatement is equivalent at
-device scale and makes per-cell frame costs exact.  I added two things:
-a static-BRAM reservation (the static design's memory has to live
-outside the regions — a failure mode I actually hit) and the frames
-objective itself.
+device scale and makes per-cell frame costs exact.  Two additions extend
+it: a static-BRAM reservation (the static design's memory has to live
+outside the regions — an observed failure mode) and the frames objective
+itself.
 
 The frame model is byte-exact, measured by parsing real partial
 bitstreams with a UG470 packet parser (the `parse-bit` subcommand).
@@ -130,9 +129,9 @@ the defaults:
 | `frames`, 2x margin (`--derate 0.5 --headroom 1.0`) | 987,828 / 1,108,220 | +15 % / +18 % |
 | `frames`, `--forbid-specials` | 546,660 / 599,180 | −36 % / −36 % |
 
-I want to be plain about how those numbers were earned, because my first
-two attempts were wrong in ways only hardware could show.  The first
-solved optimum (372,940 B) failed placement: the solver had put a
+These results required several iterations of hardware validation.  The
+first two attempts were wrong in ways only hardware could show.  The
+first solved optimum (372,940 B) failed placement: the solver had put a
 site-less clock-spine column at a pblock edge, site ranges cannot
 express that, and the physical edge retracted mid-interconnect-pair, so
 Vivado prohibited placement in both columns of the split pair
@@ -179,18 +178,18 @@ in `tools/build_device_model.py`.
 
 ## Provenance
 
-Everything here was built from the published papers (FLORA's formulation
-and rules; frame-count minimization in the lineage of Vipin and Fahmy's
-reconfiguration-centric floorplanning), from public Xilinx documentation
-(UG909 for the partial-reconfiguration rules, UG470 for the
-configuration packet and frame format), and from my own measured data —
-Vivado geometry probes of the real part, and byte-exact parses of
-partial bitstreams I built and ran.  No source code from DART or FLORA
-was used or consulted in writing this project; their repositories are
-referenced in prose only.  Where the original authors published numeric
-device facts, I used them only as an after-the-fact cross-check of my
-own measurements, and the one divergence found was resolved in favor of
-the measured map.
+OpenFLORA is a clean-room implementation, developed from published
+literature and public documentation: FLORA's formulation and rules,
+frame-count minimization in the lineage of Vipin and Fahmy's
+reconfiguration-centric floorplanning, and Xilinx's own guides (UG909
+for the partial-reconfiguration rules, UG470 for the configuration
+packet and frame format).  No source code from DART or FLORA was used or
+consulted; their repositories are referenced in prose only.  Device
+models and frame costs are measurement-based — Vivado geometry probes of
+the real part and byte-exact parses of partial bitstreams.  Published
+numeric device facts from the original authors were used only as an
+after-the-fact cross-check, and the single divergence found was resolved
+in favor of the measured map.
 
 ## Tests
 
