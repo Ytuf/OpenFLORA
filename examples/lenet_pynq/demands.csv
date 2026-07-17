@@ -1,0 +1,12 @@
+# LeNet case study: per-region demands (component-wise max over the four
+# configurations' post-route utilization reports, rp0_inst / rp1_inst rows).
+# bram is in RAMB18 units (this design's regions use no BRAM -- the 100
+# RAMB36 + 1 RAMB18 the design needs are all static; see the README).
+# slices = measured occupied slices (report_utilization -pblocks on each
+# routed config checkpoint, "Slice" row, max across configs per region;
+# measured 2026-07-16 after the round-2 [Place 30-487] placement failure
+# showed LUT/FF demand alone under-models slice packing).  The binding
+# module is the same in both regions (33 control sets, 2,026 FFs).
+name,lut,ff,bram,dsp,slices
+rp0,2874,2026,0,12,1127
+rp1,2972,2026,0,12,1264

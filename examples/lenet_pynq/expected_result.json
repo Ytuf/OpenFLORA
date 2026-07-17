@@ -1,0 +1,70 @@
+{
+ "objective": "frames",
+ "derate": 1.0,
+ "headroom": 0.93,
+ "forbid_specials": false,
+ "static_bram_reserve": 201,
+ "status": "HighsModelStatus.kOptimal",
+ "solve_seconds": 1.1719574928283691,
+ "regions": {
+  "rp0": {
+   "cols": [
+    58,
+    59,
+    60,
+    61,
+    62,
+    63
+   ],
+   "rows": [
+    0,
+    1,
+    2
+   ],
+   "lut": 6000,
+   "ff": 12000,
+   "slices": 1500,
+   "slices_demand": 1127,
+   "slices_demand_derived": false,
+   "dsp": 60,
+   "bram_ramb18": 0,
+   "wr_covered": 0.3855092276144908,
+   "frames": 1482,
+   "bytes": 599180,
+   "ranges": [
+    "SLICE_X92Y0:SLICE_X101Y149",
+    "DSP48_X3Y0:DSP48_X3Y59"
+   ]
+  },
+  "rp1": {
+   "cols": [
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+   ],
+   "rows": [
+    0,
+    1
+   ],
+   "lut": 5600,
+   "ff": 11200,
+   "slices": 1400,
+   "slices_demand": 1264,
+   "slices_demand_derived": false,
+   "dsp": 40,
+   "bram_ramb18": 0,
+   "wr_covered": 0.28708133971291866,
+   "frames": 1352,
+   "bytes": 546660,
+   "ranges": [
+    "SLICE_X34Y0:SLICE_X47Y99",
+    "DSP48_X2Y0:DSP48_X2Y39"
+   ]
+  }
+ }
+}

@@ -1,0 +1,44 @@
+# The project name appears here, in README.md, in the src/openflora/ package
+# directory name, and in one import in tests/conftest.py -- see "About the
+# name" in README.md.  (The project title is OpenFLORA; the package and CLI
+# stay lowercase per Python convention.)
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openflora"
+version = "0.1.0"
+description = "OpenFLORA: open-solver (HiGHS) MILP floorplanner for FPGA partial reconfiguration, after FLORA/DART"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Adam Kidwell" }]
+keywords = [
+    "fpga", "floorplanning", "partial-reconfiguration", "dfx", "milp",
+    "highs", "flora", "dart", "vivado", "pblock",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+dependencies = ["highspy"]
+
+[project.urls]
+Repository = "https://github.com/Ytuf/OpenFLORA"
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+openflora = "openflora.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["devices/*.json"]
