@@ -172,6 +172,41 @@ def test_pure_wirelength_a0(fp, dev):
     assert abs(cx0 - LEFT_ANCHOR[0]) <= 1.5, cx0
 
 
+# --- FLORA forbidden-region non-overlap (sec. 5.4) -------------------------
+
+def test_forbid_default_byte_identical(fp, dev):
+    """forbid_cells absent / empty leaves the model byte-for-byte
+    unchanged (cell_ok reduces to device.cell_ok)."""
+    def fm(res):
+        return sorted((r["frames"], r["bytes"])
+                      for r in res["regions"].values())
+    base = _solve(fp, dev, objective="frames")
+    empty = _solve(fp, dev, objective="frames", forbid_cells=[])
+    assert fm(base) == fm(empty)
+
+
+def test_forbid_cells_excludes_column(fp, dev):
+    """A region may not cover a column forbidden at every row it could
+    span -- the forbidden cell is treated like a device dead cell."""
+    forbid = [(34, 0), (34, 1), (34, 2)]
+    res = _solve(fp, dev, objective="frames", forbid_cells=forbid)
+    for name in ("rp0", "rp1"):
+        assert 34 not in res["regions"][name]["cols"], name
+
+
+def test_forbid_and_pull_hugs_beside_bram(fp, dev):
+    """The two FLORA roles for a static block together: pull rp0 toward a
+    BRAM column AND forbid that column's cells.  rp0 must hug the CLB
+    columns beside the BRAM without ever covering it -- the RP/BRAM
+    overlap avoidance the wirelength floorplan needs."""
+    forbid = [(36, 0), (36, 1), (36, 2)]
+    res = _solve(fp, dev, objective="wr+wl", a=0.01, b=1.0,
+                 forbid_cells=forbid, connections=[("rp0", (36, 1), 100)])
+    r0 = res["regions"]["rp0"]
+    assert 36 not in r0["cols"], r0["cols"]        # never covers the BRAM col
+    assert abs(r0["centroid"][0] - 36) <= 3, r0["centroid"]  # hugs beside it
+
+
 # --- fail-loud validation -------------------------------------------------
 
 def test_wrwl_requires_connections(fp, dev):

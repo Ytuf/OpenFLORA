@@ -115,8 +115,8 @@ def slice_demand(d):
 
 
 def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
-          forbid_specials=False, static_bram_reserve=0, connections=None,
-          a=1.0, b=1.0, row_scale=10, verbose=False):
+          forbid_specials=False, forbid_cells=None, static_bram_reserve=0,
+          connections=None, a=1.0, b=1.0, row_scale=10, verbose=False):
     """Floorplan the regions in ``demands`` on ``device``.
 
     demands: dict name -> {"lut": int, "ff": int, "bram": int, "dsp": int
@@ -158,6 +158,15 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             packing ceiling sits below 93 %.
     forbid_specials: exclude resource-less special columns (clock spine /
             config columns) from all regions.
+    forbid_cells: iterable of (col_x, row) cells the regions must NOT cover
+            or span -- FLORA's forbidden-region non-overlap constraint (their
+            eq. for delta_k rectangles) at cell granularity.  Used to keep an
+            RP off the static resource it is being pulled toward: the pinned
+            external weight-BRAM's cells are forbidden (so the region hugs
+            the CLB columns beside the BRAM, not over it) AND fed as the
+            wirelength anchor -- the two roles FLORA assigns a static block.
+            Treated identically to a device dead cell; empty (default) leaves
+            the model byte-for-byte unchanged.
     static_bram_reserve: RAMB18 that must remain outside all regions.
     Returns a result dict (see below); raises RuntimeError if the model is
     not solved to proven optimality.
@@ -167,6 +176,15 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
     nrows = device.nrows
     pc = device.per_cell
     cols = device.columns
+
+    # FLORA forbidden-region non-overlap (sec. 5.4): a forbidden (col, row)
+    # cell is treated exactly like a device dead cell throughout the model --
+    # no region may cover or span it.  Empty (default) => cell_ok is
+    # device.cell_ok verbatim, so the model is byte-for-byte unchanged.
+    forbid_set = set(tuple(fc) for fc in (forbid_cells or ()))
+
+    def cell_ok(c, r):
+        return device.cell_ok(c, r) and (c, r) not in forbid_set
 
     # wirelength objective: build the centroid/distance machinery ONLY when
     # asked, so "frames"/"wr" solves are byte-for-byte unchanged.
@@ -253,7 +271,7 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         # w = cov AND row; forbidden cells
         for c in xs:
             for r in range(nrows):
-                if device.cell_ok(c, r):
+                if cell_ok(c, r):
                     h.addConstr(w[i][(c, r)] <= cov[i][c])
                     h.addConstr(w[i][(c, r)] <= row[i][r])
                     h.addConstr(w[i][(c, r)] >= cov[i][c] + row[i][r] - 1)
@@ -289,7 +307,7 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         def cap(per_cell_amount, col_type):
             return sum(per_cell_amount * w[i][(c, r)] for c in xs
                        for r in range(nrows)
-                       if cols[c]["type"] == col_type and device.cell_ok(c, r))
+                       if cols[c]["type"] == col_type and cell_ok(c, r))
 
         h.addConstr(usable * cap(pc["lut"], "CLB") >= d.get("lut", 0))
         h.addConstr(usable * cap(pc["ff"], "CLB") >= d.get("ff", 0))
@@ -303,7 +321,7 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         for c in xs:
             if cols[c]["type"] == "BRAM":
                 for r in range(nrows):
-                    if device.cell_ok(c, r):
+                    if cell_ok(c, r):
                         h.addConstr(hb[i][r] >= w[i][(c, r)])
 
         # wirelength centroid (wl only): END indicators mirror the START
@@ -340,7 +358,7 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
     if static_bram_reserve:
         covered_b18 = sum(pc["ramb18"] * w[i][(c, r)] for i in regions
                           for c in xs for r in range(nrows)
-                          if cols[c]["type"] == "BRAM" and device.cell_ok(c, r))
+                          if cols[c]["type"] == "BRAM" and cell_ok(c, r))
         h.addConstr(covered_b18 <= device.total_ramb18() - static_bram_reserve)
 
     # wirelength distance variables (wl only): one L1 distance per
@@ -380,7 +398,7 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         for c in xs:
             fc = device.frames[cols[c]["type"]]
             for r in range(nrows):
-                if device.cell_ok(c, r):
+                if cell_ok(c, r):
                     e = e + 2 * fc * w[i][(c, r)]
                     if cols[c]["type"] == "BRAM":
                         e = e + 2 * device.bram_content_frames * w[i][(c, r)]
@@ -397,7 +415,7 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         for i in regions:
             for c in xs:
                 for r in range(nrows):
-                    if not device.cell_ok(c, r):
+                    if not cell_ok(c, r):
                         continue
                     t = cols[c]["type"]
                     if t == "CLB":
