@@ -47,6 +47,27 @@ nu_t = 1/T_t (T_t = device total of type t) and the wirelength term dropped
 (a = 0, b = 1), exactly as FLORA's own Pynq case study was configured.
 Constant demand offsets are dropped (argmin-equivalent).
 
+Objective "wr+wl" RESTORES FLORA's full bi-objective ``a * WR + b * MIW``
+(their eq. 2): the wasted-resources term above weighted by ``a``, plus a
+normalized inter-region wirelength term weighted by ``b``.  FLORA's MIW is
+the sum, over a connection matrix, of the L1 distance between region
+centroids -- and a "region" may be a FIXED anchor (a static centroid such as
+the AXI interconnect or, here, an external weight-BRAM controller), exactly
+as FLORA models RP->fixed-block wiring.  This is the term FLORA's own Pynq
+case study left off (a=0) and that DART ships as commented-out dead code
+(``milp_model_pynq_with_partition.cpp``); it is re-derived here from the
+paper, not copied.  A region's centroid is ``((left+right)/2, row_scale *
+(bottom+top)/2)`` -- left/right from the column START/END indicators,
+bottom/top from the row START/END indicators; ``row_scale`` (default 10, the
+value DART calibrated for this same xc7z020) converts clock-region rows to
+column-width units so the two axes are comparable.  Each connection
+``(u, v, weight)`` contributes ``weight * (|cx_u - cx_v| + |cy_u - cy_v|)``,
+L1-linearized with two >= constraints per axis; the sum is normalized by
+``wl_max = sum weight * (Wspan + Hspan)`` (the widest possible weighted
+distance) so ``b`` is a device-independent knob.  When the objective is not
+"wr+wl" NONE of these variables or constraints are built and the model is
+identical to before -- "frames" and "wr" solves are byte-for-byte unchanged.
+
 Encoding (regions i; columns c = tile-name X; clock-region rows r):
   cov[i][c] in {0,1}   region i covers column c
   st[i][c]  in {0,1}   start indicator: sum_c st == 1 and st >= cov_c -
@@ -94,15 +115,34 @@ def slice_demand(d):
 
 
 def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
-          forbid_specials=False, static_bram_reserve=0, verbose=False):
+          forbid_specials=False, static_bram_reserve=0, connections=None,
+          a=1.0, b=1.0, row_scale=10, verbose=False):
     """Floorplan the regions in ``demands`` on ``device``.
 
     demands: dict name -> {"lut": int, "ff": int, "bram": int, "dsp": int
              [, "slices": int]} (bram in RAMB18 units; slices = measured
              occupied slices, defaulting to the optimistic ceil(lut/4)
              floor when absent -- see ``slice_demand``).
-    objective: "frames" (minimize total configuration frames) or
-               "wr" (FLORA wasted-resources, nu_t = 1/T_t).
+    objective: "frames" (minimize total configuration frames),
+               "wr" (FLORA wasted-resources, nu_t = 1/T_t), or
+               "wr+wl" (FLORA's full a*WR + b*wirelength -- see below and
+               the module docstring; requires ``connections``).
+    connections: for objective "wr+wl", a non-empty list of
+               ``(u, v, weight)`` triples naming the region pairs (and
+               region<->anchor pairs) whose centroid-to-centroid wirelength
+               is minimized.  Each of ``u``/``v`` is EITHER a region name
+               (a key of ``demands``) OR a fixed anchor ``(col_x, row)`` in
+               device coordinates -- the column tile-X and clock-region row
+               of a static block (e.g. an external BRAM controller).
+               ``weight`` (> 0) is the connection's relative importance
+               (e.g. bus bit-width or access count).  Ignored (and not
+               required) for the "frames"/"wr" objectives.
+    a, b: the two FLORA objective weights for "wr+wl": ``minimize
+               a * WR + b * wl_normalized``.  ``a`` weights wasted resources
+               (the "wr" objective), ``b`` weights normalized wirelength.
+               a=0 gives a pure-wirelength solve; both default to 1.
+    row_scale: clock-region-row -> column-width unit conversion for the
+               wirelength centroids (default 10, DART's xc7z020 value).
     derate: usable fraction of covered capacity (the user's design-margin
             knob, e.g. 0.5 = 2x headroom); constraints are
             derate * headroom * capacity >= demand.
@@ -128,6 +168,34 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
     pc = device.per_cell
     cols = device.columns
 
+    # wirelength objective: build the centroid/distance machinery ONLY when
+    # asked, so "frames"/"wr" solves are byte-for-byte unchanged.
+    wl_active = objective == "wr+wl"
+    if wl_active:
+        if not connections:
+            raise ValueError(
+                "objective 'wr+wl' requires a non-empty connections list "
+                "[(u, v, weight), ...]")
+        for conn in connections:
+            if not (isinstance(conn, (tuple, list)) and len(conn) == 3):
+                raise ValueError(
+                    "each connection must be a (u, v, weight) triple, got %r"
+                    % (conn,))
+            for ep in conn[:2]:
+                if isinstance(ep, str):
+                    if ep not in demands:
+                        raise ValueError(
+                            "connection endpoint %r is neither a region name "
+                            "(%s) nor a (col_x, row) anchor"
+                            % (ep, sorted(demands.keys())))
+                elif not (isinstance(ep, (tuple, list)) and len(ep) == 2):
+                    raise ValueError(
+                        "connection endpoint %r must be a region name or a "
+                        "(col_x, row) anchor point" % (ep,))
+            if conn[2] <= 0:
+                raise ValueError(
+                    "connection weight must be > 0, got %r" % (conn[2],))
+
     h = highspy.Highs()
     if not verbose:
         h.silent()
@@ -138,6 +206,10 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
     rst = {i: {} for i in regions}
     w = {i: {} for i in regions}
     hb = {i: {} for i in regions}
+    en = {i: {} for i in regions}    # column END (right) indicator (wl only)
+    ren = {i: {} for i in regions}   # row END (top) indicator (wl only)
+    cx = {}                          # region x-centroid (wl only)
+    cy = {}                          # region y-centroid, scaled (wl only)
     for i in regions:
         for c in xs:
             cov[i][c] = h.addBinary()
@@ -149,6 +221,13 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         for c in xs:
             for r in range(nrows):
                 w[i][(c, r)] = h.addBinary()
+        if wl_active:
+            for c in xs:
+                en[i][c] = h.addBinary()
+            for r in range(nrows):
+                ren[i][r] = h.addBinary()
+            cx[i] = h.addVariable(0, xs[-1])
+            cy[i] = h.addVariable(0, (nrows - 1) * row_scale)
 
     for i in regions:
         if forbid_specials:
@@ -227,6 +306,31 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
                     if device.cell_ok(c, r):
                         h.addConstr(hb[i][r] >= w[i][(c, r)])
 
+        # wirelength centroid (wl only): END indicators mirror the START
+        # indicators above.  st marks the one 0->1 (left/bottom) transition;
+        # en/ren mark the one 1->0 (right/top) transition, so for the
+        # contiguous span the st-column is the leftmost covered and the
+        # en-column the rightmost.  cx = midpoint of the two edges.
+        if wl_active:
+            for k, c in enumerate(xs):
+                if k == len(xs) - 1:
+                    h.addConstr(en[i][c] >= cov[i][c])
+                else:
+                    h.addConstr(en[i][c] >= cov[i][c] - cov[i][xs[k + 1]])
+            h.addConstr(sum(en[i][c] for c in xs) == 1)
+            for r in range(nrows):
+                if r == nrows - 1:
+                    h.addConstr(ren[i][r] >= row[i][r])
+                else:
+                    h.addConstr(ren[i][r] >= row[i][r] - row[i][r + 1])
+            h.addConstr(sum(ren[i][r] for r in range(nrows)) == 1)
+            left = sum(c * st[i][c] for c in xs)
+            right = sum(c * en[i][c] for c in xs)
+            bottom = sum(r * rst[i][r] for r in range(nrows))
+            top = sum(r * ren[i][r] for r in range(nrows))
+            h.addConstr(cx[i] == 0.5 * left + 0.5 * right)
+            h.addConstr(cy[i] == row_scale * (0.5 * bottom + 0.5 * top))
+
     # no-overlap
     for c in xs:
         for r in range(nrows):
@@ -238,6 +342,35 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
                           for c in xs for r in range(nrows)
                           if cols[c]["type"] == "BRAM" and device.cell_ok(c, r))
         h.addConstr(covered_b18 <= device.total_ramb18() - static_bram_reserve)
+
+    # wirelength distance variables (wl only): one L1 distance per
+    # connection, |cx_u - cx_v| + |cy_u - cy_v|, linearized as dx >= +/-diff,
+    # dy >= +/-diff (a minimizing objective pulls each down to the true |.|).
+    # A fixed anchor endpoint (col_x, row) is a CONSTANT centroid (its row is
+    # scaled to match cy's units); a named endpoint uses its cx/cy vars.
+    dterms = []            # (weight, dx, dy) per connection
+    wl_max = 0.0
+    if wl_active:
+        Wspan = xs[-1] - xs[0]
+        Hspan = (nrows - 1) * row_scale
+
+        def _centroid(ep):
+            if isinstance(ep, str):
+                return cx[ep], cy[ep]
+            px, py = ep
+            return float(px), float(py) * row_scale
+
+        for u, v, weight in connections:
+            cxu, cyu = _centroid(u)
+            cxv, cyv = _centroid(v)
+            dx = h.addVariable(0, Wspan)
+            dy = h.addVariable(0, Hspan)
+            h.addConstr(dx >= cxu - cxv)
+            h.addConstr(dx >= cxv - cxu)
+            h.addConstr(dy >= cyu - cyv)
+            h.addConstr(dy >= cyv - cyu)
+            dterms.append((weight, dx, dy))
+            wl_max += weight * (Wspan + Hspan)
 
     # objective
     def frames_expr(i):
@@ -255,9 +388,10 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         e = e + sum(2 * hb[i][r] for r in range(nrows))
         return e
 
-    if objective == "frames":
-        h.minimize(sum(frames_expr(i) for i in regions))
-    elif objective == "wr":
+    def wr_expr():
+        # FLORA wasted-resources: sum of covered per-type resource fractions
+        # (nu_t = pc_t / T_t).  Identical expression for "wr" and the WR term
+        # of "wr+wl".
         T = device.totals
         obj = 0
         for i in regions:
@@ -272,7 +406,15 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
                         obj = obj + (pc["ramb36"] / T["ramb36"]) * w[i][(c, r)]
                     elif t == "DSP":
                         obj = obj + (pc["dsp"] / T["dsp"]) * w[i][(c, r)]
-        h.minimize(obj)
+        return obj
+
+    if objective == "frames":
+        h.minimize(sum(frames_expr(i) for i in regions))
+    elif objective == "wr":
+        h.minimize(wr_expr())
+    elif objective == "wr+wl":
+        wl = sum(weight * (dx + dy) for weight, dx, dy in dterms)
+        h.minimize(a * wr_expr() + (b / wl_max) * wl)
     else:
         raise ValueError("unknown objective %r" % (objective,))
 
@@ -291,6 +433,32 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
            "forbid_specials": bool(forbid_specials),
            "static_bram_reserve": static_bram_reserve,
            "status": str(status), "solve_seconds": dt, "regions": {}}
+    if wl_active:
+        # Report the TRUE geometric wirelength of the solved placement,
+        # computed from the (equality-pinned) centroids -- NOT from the dx/dy
+        # linearization variables.  Those are only lower-bounded (dx >=
+        # |cx_u-cx_v|); the minimization pulls them to the true |.| only for
+        # a connection whose objective coefficient is nonzero.  When b == 0
+        # (or a connection is otherwise unpriced) the solver leaves dx/dy at
+        # their upper bounds, so reading them back would over-report the
+        # wirelength.  The centroids are always exact, so this is correct for
+        # every a/b.
+        def _centroid_val(ep):
+            if isinstance(ep, str):
+                return val(cx[ep]), val(cy[ep])
+            px, py = ep
+            return float(px), float(py) * row_scale
+
+        wl_raw = 0.0
+        for u, v, weight in connections:
+            cxu, cyu = _centroid_val(u)
+            cxv, cyv = _centroid_val(v)
+            wl_raw += weight * (abs(cxu - cxv) + abs(cyu - cyv))
+        out["a"] = a
+        out["b"] = b
+        out["row_scale"] = row_scale
+        out["wirelength"] = {"raw": wl_raw, "normalized": wl_raw / wl_max,
+                             "wl_max": wl_max}
     T = device.totals
     for i in regions:
         ccols = [c for c in xs if val(cov[i][c]) > 0.5]
@@ -322,4 +490,9 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             "frames": nframes, "bytes": nbytes,
             "ranges": _emit.site_ranges(device, ccols, rrows),
         }
+        if wl_active:
+            # centroid reported in device (col_x, row) units -- cy is stored
+            # scaled internally, so unscale the row back for reporting.
+            out["regions"][i]["centroid"] = [val(cx[i]),
+                                             val(cy[i]) / row_scale]
     return out
