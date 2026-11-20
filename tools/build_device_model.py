@@ -39,6 +39,61 @@ RAMB18_PER_CELL = 20
 DSP_PER_CELL = 20
 
 
+# Interconnect cost classes that are general routing (the switch-box wires a
+# route travels on); pin feeds, bounces, clocks and tie-offs are not.
+ROUTING_COSTS = ("SINGLE", "DOUBLE", "HQUAD", "VQUAD", "BENTQUAD",
+                 "HLONG", "VLONG", "VLONG12")
+# The horizontal length-1 wires, where Vivado 2019.1 puts partition pins: on
+# xc7z020 (get_pplocs) all 12,752 PPLOCs of eight measured regions sat on one
+# of them; only the region too small for its pins (10 slice cols x 1 row,
+# 1,594 pins, where routing failed at a 20-pin tile pair) spilled 7 % onto
+# vertical singles.
+PPLOC_WIRES = ("EL1BEG", "ER1BEG", "WL1BEG", "WR1BEG")
+
+
+def routing_facts(probe_path):
+    """Reduce the probe's interconnect inventory (INTW lines) to per-tile
+    counts: routing wires named in a tile, the interconnect rows (sum dy) and
+    columns (sum dx) those wires cross, and the partition-pin wires.  Taken as
+    the most common inventory over the sampled tiles -- tiles at the device
+    edge or the processor-subsystem hole see truncated or jumping wires."""
+    tiles = {}
+    for ln in open(probe_path):
+        if not ln.startswith("INTW "):
+            continue
+        _, tile, wire, cost, dx, dy = ln.split()
+        if cost not in ROUTING_COSTS:
+            continue
+        t = tiles.setdefault(tile, [0, 0, 0, 0])
+        t[0] += 1
+        t[1] += int(dy)
+        t[2] += int(dx)
+        if any(wire.startswith(p) for p in PPLOC_WIRES):
+            t[3] += 1
+    if not tiles:
+        return None
+
+    def mode(k):
+        counts = {}
+        for t in tiles.values():
+            counts[t[k]] = counts.get(t[k], 0) + 1
+        return max(sorted(counts), key=lambda v: counts[v])
+
+    facts = {"wires_per_tile": mode(0),
+             "vertical_crossings_per_tile": mode(1),
+             "horizontal_crossings_per_tile": mode(2),
+             "pploc_wires_per_tile": mode(3),
+             "sampled_tiles": len(tiles)}
+    # a misread probe fails loudly: every sampled tile carries the same
+    # partition-pin wires, and the vertical inventory is near-uniform
+    if any(t[3] != facts["pploc_wires_per_tile"] for t in tiles.values()):
+        raise AssertionError("partition-pin wire count differs between tiles")
+    if any(abs(t[1] - facts["vertical_crossings_per_tile"]) > 4
+           for t in tiles.values()):
+        raise AssertionError("vertical routing inventory not uniform")
+    return facts
+
+
 def name_xy(name):
     i = name.rfind("_X")
     base = name[i + 2:]
@@ -54,6 +109,7 @@ def build(probe_path):
     ramb_to_tile = {}     # ramb36 site X -> tile col X
     dsp_to_tile = {}      # dsp48 site X -> tile col X
     int_rows = {}         # (side, tile col X) -> rows where INT exists
+    int_count = {}        # (tile col X, row) -> INT tiles (routing model)
 
     for ln in open(probe_path):
         ln = ln.strip()
@@ -98,6 +154,7 @@ def build(probe_path):
             if ty in ("INT_L", "INT_R"):
                 x, y = name_xy(name)
                 int_rows.setdefault((ty, x), set()).add(y // 50)
+                int_count[(x, y // 50)] = int_count.get((x, y // 50), 0) + 1
 
     # ---- fabric columns keyed by tile-name X -------------------------------
     cols = {}
@@ -172,6 +229,24 @@ def build(probe_path):
             assert tot_dsp == int(ln.split()[2]), (tot_dsp, ln)
     model["totals"] = {"slices": tot_sl, "lut": tot_sl * 4, "ff": tot_sl * 8,
                        "ramb36": tot_br, "dsp": tot_dsp}
+
+    # ---- partition-pin routability facts (probe section 5) ------------------
+    # Interconnect tiles per fabric cell: one INT tile per site row, the same
+    # in every fabric column (asserted).  A special column's INT tiles carry
+    # no sites, so a site-range pblock cannot own them: they stay static
+    # (measured: no module routing on INT_R_X33 in two routed regions that
+    # covered it), and only CLB/BRAM/DSP columns route a region's module.
+    facts = routing_facts(probe_path)
+    if facts is not None:
+        per_cell = set(n for (x, r), n in int_count.items()
+                       if x in cols and cols[x]["type"] != "OTHER30"
+                       and r in cols[x]["rows"])
+        if len(per_cell) != 1:
+            raise AssertionError("INT tiles per cell not uniform: %s"
+                                 % sorted(per_cell))
+        facts["int_tiles_per_cell"] = per_cell.pop()
+        facts["module_routing_types"] = ["CLB", "BRAM", "DSP"]
+        model["routing"] = facts
     return model
 
 

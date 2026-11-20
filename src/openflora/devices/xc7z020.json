@@ -824,5 +824,18 @@
   "ff": 106400,
   "ramb36": 140,
   "dsp": 220
+ },
+ "routing": {
+  "wires_per_tile": 99,
+  "vertical_crossings_per_tile": 196,
+  "horizontal_crossings_per_tile": 124,
+  "pploc_wires_per_tile": 16,
+  "sampled_tiles": 174,
+  "int_tiles_per_cell": 50,
+  "module_routing_types": [
+   "CLB",
+   "BRAM",
+   "DSP"
+  ]
  }
 }

@@ -13,6 +13,8 @@
 #     can reconstruct fabric columns + interconnect pairing without any
 #     guessed layout
 #  4. site->tile mapping for column heads
+#  5. the interconnect inventory of sample INT tiles (routing wires per
+#     tile, their spans): the partition-pin routability model's device facts
 create_project -in_memory -part xc7z020clg400-1
 link_design -part xc7z020clg400-1
 
@@ -74,6 +76,36 @@ foreach s [get_sites RAMB18_X*Y*] { puts $fp "MAPB18 $s [get_tiles -of_objects $
 puts $fp "=== device totals ==="
 foreach pat {SLICE RAMB36 RAMB18 DSP48} {
   puts $fp "TOTAL $pat [llength [get_sites ${pat}_X*Y*]]"
+}
+
+# 5. interconnect inventory, for the partition-pin routability model: every
+#    node NAMED in a sample interconnect tile (one per fabric column, the
+#    middle row of each clock region), its cost class, and how many
+#    interconnect columns (dx) and rows (dy) it spans -- measured from the
+#    INT_L/INT_R tiles the node touches (INT_TILE_X/Y), not from wire names.
+#    INTW <tile> <wire> <cost class> <dx> <dy>
+puts $fp "=== interconnect inventory ==="
+foreach cr [get_clock_regions] {
+  set ys {}
+  foreach t [get_tiles -quiet -of_objects [get_clock_regions $cr] -filter {TYPE == INT_L || TYPE == INT_R}] {
+    lappend ys [get_property INT_TILE_Y $t]
+  }
+  if {[llength $ys] == 0} { continue }
+  set ys [lsort -integer -unique $ys]
+  set ymid [lindex $ys [expr {[llength $ys] / 2}]]
+  foreach t [get_tiles -quiet -of_objects [get_clock_regions $cr] -filter "(TYPE == INT_L || TYPE == INT_R) && INT_TILE_Y == $ymid"] {
+    foreach n [get_nodes -quiet -of_objects $t] {
+      set nm [get_property NAME $n]
+      if {[string first "$t/" $nm] != 0} { continue }
+      set xs {}; set yv {}
+      foreach tt [get_tiles -quiet -of_objects $n -filter {TYPE == INT_L || TYPE == INT_R}] {
+        lappend xs [get_property INT_TILE_X $tt]; lappend yv [get_property INT_TILE_Y $tt]
+      }
+      if {[llength $xs] == 0} { continue }
+      set xs [lsort -integer $xs]; set yv [lsort -integer $yv]
+      puts $fp "INTW $t [lindex [split $nm /] 1] [get_property COST_CODE_NAME $n] [expr {[lindex $xs end] - [lindex $xs 0]}] [expr {[lindex $yv end] - [lindex $yv 0]}]"
+    }
+  }
 }
 close $fp
 exit
