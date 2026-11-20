@@ -1,7 +1,8 @@
 """Build a device-model JSON from a Vivado geometry probe.
 
 Usage:
-    python tools/build_device_model.py probe_geometry_out.txt out.json
+    python tools/build_device_model.py probe_geometry_out.txt out.json \
+        [--specials probe_specials.log]
 
 The probe file is produced by tools/probe_geometry.tcl run against the real
 part in Vivado (see that file for the recipe).  This script reduces it to
@@ -22,9 +23,10 @@ sanity-checks slice pairing and column heights, so a silently-misread probe
 fails loudly.
 """
 import json
+import os
 import sys
 
-NROWS = 3                  # clock-region rows (xc7z020: Y0/Y1/Y2)
+NROWS = 3                  # clock-region rows of a probe without section 6 (xc7z020)
 FRAMES = {"CLB": 36, "BRAM": 28, "DSP": 28, "OTHER30": 30}
 BRAM_CONTENT_FRAMES = 128
 FRAME_BYTES = 404          # 101 words x 4 (UG470 frame length)
@@ -101,7 +103,7 @@ def name_xy(name):
     return int(base[:j]), int(base[j + 1:])
 
 
-def build(probe_path):
+def build(probe_path, specials_log=None):
     slice_rows = {}       # slice site X -> rows where the column exists
     ramb36_rows = {}      # ramb36 site X -> rows
     dsp_rows = {}         # dsp48 site X -> rows
@@ -110,10 +112,27 @@ def build(probe_path):
     dsp_to_tile = {}      # dsp48 site X -> tile col X
     int_rows = {}         # (side, tile col X) -> rows where INT exists
     int_count = {}        # (tile col X, row) -> INT tiles (routing model)
+    colrow = {}           # (family, site X) -> {row: sites} (probe section 6)
+    general = any(ln.startswith("COLROW ") for ln in open(probe_path))
 
     for ln in open(probe_path):
         ln = ln.strip()
-        if ln.startswith("COL SLICE_X"):
+        if ln.startswith("COLROW "):
+            _, fam, x, r, n = ln.split()
+            colrow.setdefault((fam, int(x)), {})[int(r)] = int(n)
+        elif ln.startswith("MAPLO "):
+            _, site, tile = ln.split()
+            sx, sy = name_xy(site)
+            tx, ty = name_xy(tile)
+            if site.startswith("SLICE_"):
+                slice_to_tile[sx] = tx
+            elif site.startswith("RAMB36_"):
+                ramb_to_tile[sx] = tx
+            elif site.startswith("DSP48_"):
+                dsp_to_tile[sx] = tx
+        elif general and ln.startswith("COL "):
+            continue          # rows come from the per-row counts instead
+        elif ln.startswith("COL SLICE_X"):
             parts = ln.split()
             x = int(parts[1][len("SLICE_X"):])
             n = int(parts[2][2:])
@@ -155,6 +174,23 @@ def build(probe_path):
                 x, y = name_xy(name)
                 int_rows.setdefault((ty, x), set()).add(y // 50)
                 int_count[(x, y // 50)] = int_count.get((x, y // 50), 0) + 1
+
+    # ---- general parts: a cell (column x clock-region row) is fabric only
+    # where the column has every site of the row (50 slices, 10 RAMB36, 20
+    # DSP48); partly occluded cells are left out, so the model never counts
+    # sites a region could not be given whole
+    nrows = NROWS
+    if general:
+        full = {"SLICE": 50, "RAMB36": 10, "DSP48": 20}
+        nrows = 1 + max(r for rows in colrow.values() for r in rows)
+        for (fam, x), rows in colrow.items():
+            got = sorted(r for r, n in rows.items() if n == full[fam])
+            if fam == "SLICE":
+                slice_rows[x] = got
+            elif fam == "RAMB36":
+                ramb36_rows[x] = got
+            else:
+                dsp_rows[x] = got
 
     # ---- fabric columns keyed by tile-name X -------------------------------
     cols = {}
@@ -199,7 +235,7 @@ def build(probe_path):
             pairs[x] = both
 
     model = {
-        "nrows": NROWS,
+        "nrows": nrows,
         "frames": FRAMES,
         "bram_content_frames": BRAM_CONTENT_FRAMES,
         "frame_bytes": FRAME_BYTES,
@@ -220,15 +256,23 @@ def build(probe_path):
                  if c["type"] == "BRAM")
     tot_dsp = sum(DSP_PER_CELL * len(c["rows"]) for c in cols.values()
                   if c["type"] == "DSP")
+    excluded = {}
     for ln in open(probe_path):
-        if ln.startswith("TOTAL SLICE"):
-            assert tot_sl == int(ln.split()[2]), (tot_sl, ln)
-        if ln.startswith("TOTAL RAMB36"):
-            assert tot_br == int(ln.split()[2]), (tot_br, ln)
-        if ln.startswith("TOTAL DSP48"):
-            assert tot_dsp == int(ln.split()[2]), (tot_dsp, ln)
+        for fam, got in (("SLICE", tot_sl), ("RAMB36", tot_br),
+                         ("DSP48", tot_dsp)):
+            if ln.startswith("TOTAL %s " % fam):
+                n = int(ln.split()[2])
+                if general:
+                    # the sites of partly occluded cells are not counted
+                    assert got <= n, (got, ln)
+                    if got < n:
+                        excluded[fam] = n - got
+                else:
+                    assert got == n, (got, ln)
     model["totals"] = {"slices": tot_sl, "lut": tot_sl * 4, "ff": tot_sl * 8,
                        "ramb36": tot_br, "dsp": tot_dsp}
+    if excluded:
+        model["excluded_sites"] = excluded
 
     # ---- partition-pin routability facts (probe section 5) ------------------
     # Interconnect tiles per fabric cell: one INT tile per site row, the same
@@ -247,15 +291,40 @@ def build(probe_path):
         facts["int_tiles_per_cell"] = per_cell.pop()
         facts["module_routing_types"] = ["CLB", "BRAM", "DSP"]
         model["routing"] = facts
+    # ---- special columns that cost a CLB column (tools/probe_specials.py) --
+    # special x -> the CLB columns Vivado prohibits placement in while a
+    # region covers x (its interconnect pair is split against static)
+    if specials_log:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from probe_specials import parse_log
+        lost_sites = parse_log(specials_log)
+        missing = sorted(set(specials) - set(lost_sites))
+        if missing:
+            raise AssertionError("probe_specials log lacks specials %s" % missing)
+        lost = {}
+        for x, sxs in lost_sites.items():
+            cs = sorted(set(slice_to_tile[sx] for sx in sxs))
+            if any(cols.get(c, {}).get("type") != "CLB" for c in cs):
+                raise AssertionError("special %d splits a non-CLB column: %s"
+                                     % (x, cs))
+            lost[x] = cs
+        model["special_splits"] = {str(x): sorted(cs)
+                                   for x, cs in sorted(lost.items()) if cs}
     return model
 
 
 def main():
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    specials_log = None
+    if "--specials" in args:
+        k = args.index("--specials")
+        specials_log = args[k + 1]
+        del args[k:k + 2]
+    if len(args) != 2:
         print(__doc__)
         return 2
-    probe_path, out_path = sys.argv[1], sys.argv[2]
-    m = build(probe_path)
+    probe_path, out_path = args
+    m = build(probe_path, specials_log)
     with open(out_path, "w") as f:
         json.dump(m, f, indent=1)
     print("device model written to %s: %d columns, %d pairs, specials=%s"

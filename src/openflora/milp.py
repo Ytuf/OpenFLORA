@@ -126,9 +126,9 @@ DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins")
 #          farther the pins spread, the more of that wiring crosses.  band =
 #          the rows the pins spread over: Vivado places them at about
 #          PIN_PACKING per interconnect tile of the pin columns (cols less
-#          the column paired with each covered special column, which takes
-#          no pins), so band = min(region rows, pins / (PIN_PACKING *
-#          pploc_cols)).  Measured failures: a 4-column, 150-row region ran
+#          the CLB columns covered special columns cost, device
+#          special_splits, which take no pins), so band = min(region rows,
+#          pins / (PIN_PACKING * pploc_cols)).  Measured failures: a 4-column, 150-row region ran
 #          out of north-going vertical wires (42 of its 43 overlapping
 #          nodes); a 5-column one failed at 150 rows where the same columns
 #          routed at 100.
@@ -179,7 +179,7 @@ def pin_capacity(device, cols, rows, pins, pin_area_density=None,
     pk = PIN_PACKING if pin_packing is None else pin_packing
     types = rt["module_routing_types"]
     rcols = [c for c in cols if device.col_type(c) in types]
-    nspec = sum(1 for c in cols if device.col_type(c) not in types)
+    nspec = sum(len(device.special_splits.get(c, ())) for c in cols)
     tiles = rt["int_tiles_per_cell"] * sum(1 for c in rcols for r in rows
                                            if device.cell_ok(c, r))
     pcols = len(rcols) - nspec
@@ -405,9 +405,20 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         usable = derate * headroom
 
         def cap(per_cell_amount, col_type):
-            return sum(per_cell_amount * w[i][(c, r)] for c in xs
-                       for r in range(nrows)
-                       if cols[c]["type"] == col_type and cell_ok(c, r))
+            # covered capacity, less the CLB columns a covered special
+            # column costs (special_splits: Vivado prohibits placement in
+            # the special's split interconnect pair, [Constraints 18-993]);
+            # the pair rule covers that column whenever the special is
+            e = sum(per_cell_amount * w[i][(c, r)] for c in xs
+                    for r in range(nrows)
+                    if cols[c]["type"] == col_type and cell_ok(c, r))
+            if col_type == "CLB":
+                for x, lost in device.special_splits.items():
+                    for c in lost:
+                        e = e - sum(per_cell_amount * w[i][(x, r)]
+                                    for r in range(nrows)
+                                    if cell_ok(x, r) and cell_ok(c, r))
+            return e
 
         h.addConstr(usable * cap(pc["lut"], "CLB") >= d.get("lut", 0))
         h.addConstr(usable * cap(pc["ff"], "CLB") >= d.get("ff", 0))
@@ -438,7 +449,8 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             # rows, which suffices when pploc_cols >= pins / sqrt(pk * k)
             k = dc * rt["vertical_crossings_per_tile"]
             ncols = sum(cov[i][c] for c in rcols)
-            nspec = sum(cov[i][c] for c in xs if cols[c]["type"] not in types)
+            nspec = sum(len(device.special_splits.get(c, ())) * cov[i][c]
+                        for c in xs)
             height = sum(rt["int_tiles_per_cell"] * row[i][r]
                          for r in range(nrows))
             z = h.addBinary()
@@ -611,6 +623,10 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
         rrows = [r for r in range(nrows) if val(row[i][r]) > 0.5]
         nframes, nbytes = _frames.region_frames(device, ccols, rrows)
         cells = [(c, r) for c in ccols for r in rrows]
+        # placeable CLB cells: less the columns the covered specials cost
+        lost = set((c, r) for x in ccols for c in device.special_splits.get(x, ())
+                   for r in rrows)
+        placeable = [cell for cell in cells if cell not in lost]
         wr = 0.0
         for c, r in cells:
             t = cols[c]["type"]
@@ -622,9 +638,11 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
                 wr += pc["dsp"] / T["dsp"]
         out["regions"][i] = {
             "cols": ccols, "rows": rrows,
-            "lut": sum(pc["lut"] for c, r in cells if cols[c]["type"] == "CLB"),
-            "ff": sum(pc["ff"] for c, r in cells if cols[c]["type"] == "CLB"),
-            "slices": sum(pc["slices"] for c, r in cells
+            "lut": sum(pc["lut"] for c, r in placeable
+                       if cols[c]["type"] == "CLB"),
+            "ff": sum(pc["ff"] for c, r in placeable
+                      if cols[c]["type"] == "CLB"),
+            "slices": sum(pc["slices"] for c, r in placeable
                           if cols[c]["type"] == "CLB"),
             "slices_demand": slice_demand(demands[i]),
             "slices_demand_derived": "slices" not in demands[i]

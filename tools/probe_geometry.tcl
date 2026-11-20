@@ -1,9 +1,9 @@
 # Device-geometry probe: the recipe for adding a new part.
 #
-# Run in Vivado (tested with 2019.1) with the target part substituted below;
+# Run in Vivado (tested with 2019.1), naming the part (default xc7z020clg400-1);
 # it needs no design, only the device database:
 #
-#   vivado -mode batch -source probe_geometry.tcl
+#   vivado -mode batch -source probe_geometry.tcl -tclargs xc7z020clg400-1
 #
 # then feed the output to tools/build_device_model.py to produce the
 # device-model JSON. Dumps:
@@ -15,8 +15,12 @@
 #  4. site->tile mapping for column heads
 #  5. the interconnect inventory of sample INT tiles (routing wires per
 #     tile, their spans): the partition-pin routability model's device facts
-create_project -in_memory -part xc7z020clg400-1
-link_design -part xc7z020clg400-1
+#  6. per-column, per-clock-region-row site counts (parts whose columns are
+#     not full height everywhere)
+set part xc7z020clg400-1
+if {[llength $argv] > 0} { set part [lindex $argv 0] }
+create_project -in_memory -part $part
+link_design -part $part
 
 set fp [open "probe_geometry_out.txt" w]
 
@@ -105,6 +109,31 @@ foreach cr [get_clock_regions] {
       set xs [lsort -integer $xs]; set yv [lsort -integer $yv]
       puts $fp "INTW $t [lindex [split $nm /] 1] [get_property COST_CODE_NAME $n] [expr {[lindex $xs end] - [lindex $xs 0]}] [expr {[lindex $yv end] - [lindex $yv 0]}]"
     }
+  }
+}
+
+# 6. per-column, per-clock-region-row site counts and the lowest site of each
+#    column, so that parts whose columns are not full height everywhere
+#    (occluded by a processor subsystem, GTs, configuration blocks) are read
+#    cell by cell.  COLROW <family> <site X> <row> <count>; MAPLO <site> <tile>
+puts $fp "=== per-column clock-region-row site counts ==="
+foreach {pat perrow} {SLICE 50 RAMB36 10 DSP48 20} {
+  set cnt [dict create]
+  set lo [dict create]
+  foreach s [get_sites ${pat}_X*Y*] {
+    set nm "$s"
+    set base [string range $nm [expr {[string last "_X" $nm] + 2}] end]
+    set xv [lindex [split $base Y] 0]
+    set yv [lindex [split $base Y] 1]
+    dict incr cnt "$xv [expr {$yv / $perrow}]"
+    if {![dict exists $lo $xv] || $yv < [lindex [dict get $lo $xv] 0]} {
+      dict set lo $xv [list $yv $nm]
+    }
+  }
+  foreach k [lsort [dict keys $cnt]] { puts $fp "COLROW $pat $k [dict get $cnt $k]" }
+  foreach xv [lsort -integer [dict keys $lo]] {
+    set nm [lindex [dict get $lo $xv] 1]
+    puts $fp "MAPLO $nm [get_tiles -of_objects [get_sites $nm]]"
   }
 }
 close $fp

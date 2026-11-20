@@ -17,6 +17,9 @@ Column types and per-clock-region contents:
   DSP     : per_cell["dsp"] DSP48
   OTHER30 : special column with no user resources (clock spine / config
             column class); costs frames["OTHER30"] configuration frames.
+            Covering one can cost a neighboring CLB column's placement
+            (``special_splits``, measured per column by
+            tools/probe_specials.py).
 
 Frame accounting constants (all measured from real partial bitstreams on
 xc7z020, corroborated by UG470 and Project X-Ray -- see README provenance):
@@ -50,6 +53,10 @@ class Device:
         self.columns = {int(k): v for k, v in raw["columns"].items()}
         self.pairs = {int(k): v for k, v in raw["pairs"].items()}
         self.specials = raw["specials"]
+        # special x -> CLB columns whose placement Vivado prohibits while a
+        # region covers x (tools/probe_specials.py); absent = none measured
+        self.special_splits = {int(k): v for k, v in
+                               raw.get("special_splits", {}).items()}
         self.totals = raw["totals"]
         self.xs = sorted(self.columns.keys())
 
