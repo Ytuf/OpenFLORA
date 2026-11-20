@@ -44,10 +44,10 @@ DSP_PER_CELL = 20
 ROUTING_COSTS = ("SINGLE", "DOUBLE", "HQUAD", "VQUAD", "BENTQUAD",
                  "HLONG", "VLONG", "VLONG12")
 # The horizontal length-1 wires, where Vivado 2019.1 puts partition pins: on
-# xc7z020 (get_pplocs) all 12,752 PPLOCs of eight measured regions sat on one
-# of them; only the region too small for its pins (10 slice cols x 1 row,
-# 1,594 pins, where routing failed at a 20-pin tile pair) spilled 7 % onto
-# vertical singles.
+# xc7z020 (get_pplocs) all 19,128 PPLOCs of twelve measured regions sat on
+# one of them; only the two regions too small for their pins (10 slice cols
+# x 1 row, 1,594 pins each, where routing failed at a 20-pin tile pair)
+# spilled 7 % onto vertical singles.
 PPLOC_WIRES = ("EL1BEG", "ER1BEG", "WL1BEG", "WR1BEG")
 
 

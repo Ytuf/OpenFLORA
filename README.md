@@ -56,6 +56,10 @@ units), DSP — and the optional sixth is measured occupied slices:
     rp0,2874,2026,0,12,1127
     rp1,2972,2026,0,12,1264
 
+An optional seventh column, `pins`, is the region's partition-pin
+count (the bit count of its ports); it adds the routability limits
+described under "Partition pins" below.
+
 Providing the measured `slices` column is strongly recommended.  Without
 it the solver falls back to ceil(lut/4), which assumes perfect packing.
 A placement failure on real hardware showed modules packing at 2.35–2.8
@@ -163,6 +167,152 @@ The model does not cover timing at all, and it is honest about a few
 other things it does not cover.  Read [`docs/LIMITS.md`](docs/LIMITS.md)
 before trusting it on your design.
 
+## Partition pins (routability)
+
+A region that holds its logic can still fail to route.  Every bit of a
+reconfigurable partition's ports is a partition pin, and every pin is
+routed into the region.  Without a model of that, OpenFLORA returned
+floorplans that met every resource constraint and then failed in
+Vivado: "N signals failed to route due to routing congestion", then
+"[Constraints 18-1000] Routing results verification failed".  The
+optional `pins` column of the demands CSV (the region's port bits)
+adds two routability limits, built from facts measured on the real
+part:
+
+    name,lut,ff,bram,dsp,slices,pins
+    rp0,446,1738,0,0,1000,1596
+
+What the measurements showed (xc7z020, Vivado 2019.1, `get_pplocs` and
+the routed nodes of routed and failed checkpoints):
+
+* **A partition pin is a routing node inside the region (a PPLOC).**
+  Vivado puts it on one of the 16 horizontal length-1 wires of an
+  interconnect tile.  All 19,128 PPLOCs of twelve measured regions
+  sat on those wires; only the regions too small for their pins (10
+  slice cols x 1 row) spilled 7 % onto vertical singles.
+* **The static design fixes the pins before any module is built.**  A
+  slot's in-pin and out-pin land wherever the static logic wants them,
+  sometimes tens of rows apart, and every module that passes the slot
+  through wires between them.  How far apart they land grows with the
+  height the pins spread over.  Vivado places them at about 2.9 per
+  interconnect tile, so a narrow region spreads them over its whole
+  height.
+* **A special (site-less) column's interconnect stays static.**  It has
+  no sites, so a site-range pblock cannot own it: no module route used
+  `INT_R_X33` in the two routed regions that covered it, and its paired
+  column took no pins.  BRAM and DSP columns' interconnect routes the
+  module and takes pins.
+
+The two limits, for a region with `tiles` interconnect tiles in `cols`
+columns that route its module (CLB, BRAM and DSP columns, 50 tiles per
+clock-region row):
+
+| limit | constraint | what failed when it was exceeded |
+|---|---|---|
+| area | pins <= 0.2217 x 16 x tiles | 10 slice cols x 1 row: Vivado packed up to 20 pins into one interconnect-tile pair; most failing modules died on one node that two neighbouring pins both needed |
+| width | pins x band <= 162.9 x 196 x cols | 8 slice cols x 3 rows: 42 of the 43 overlapping nodes were north-going vertical wires in the middle rows; 10 x 3 failed where the same columns routed at 10 x 2 |
+
+band = min(region rows, pins / (2.9 x pin columns)): the rows the pins
+spread over.  Pin columns are `cols` less the column paired with each
+covered special column.
+
+16 (partition-pin wires per tile) and 196 (vertical wire crossings per
+tile column: the sum, over the tile's routing wires, of the
+interconnect rows each one spans) come from the device.
+`tools/probe_geometry.tcl` section 5 dumps every routing node of 174
+sample interconnect tiles; `tools/build_device_model.py` reduces them
+into the device model's `routing` section.  Three constants are
+measured on builds:
+
+* 2.9 pins per tile is Vivado's own packing, read directly from six
+  regions (2.69-2.97);
+* 0.2217 and 162.9 are each the density of the densest region that
+  routed every module of the calibration design.  The failures lie
+  above them.
+
+The MILP takes the width limit as a disjunction with one binary per
+region: either the band is the region's height and the height form
+holds, or the pin columns reach pins / sqrt(2.9 x 162.9 x 196), which
+makes the packed band fit.
+
+The horizontal counterpart (vertical cut lines) is not modeled, because
+it cannot bind on 7-series.  A region is at least one clock-region row
+(50 tiles) high, so its vertical cut lines carry at least 50 x 124
+wires.  The pin pairs crossing them were measured at the same few
+hundred (281-426) as across horizontal cuts.
+
+For CLB-only regions two clock-region rows high, the two limits are
+the same as "slices >= pins / 1.77" and "slice columns >= pins / 160".
+In one row the area limit binds first.  Where they differ:
+
+* BRAM and DSP columns add routing width and pin area without adding
+  slices; a special column adds neither;
+* a region spanning three rows needs more columns unless its pins pack
+  into a shorter band.
+
+**What the constants rest on.**  The calibration design is RFP's GA at
+33 modules: 1,596 pins per region, memory registers off.  Its modules
+register every port bit, and the worst pass up to 89 % of the slot
+bits straight through, which is what loads the width limit.  A design
+whose modules pass fewer bits through is bounded conservatively.  Two
+regions of the same shape can still differ:
+
+* 8 x 3 failed at X82..X89 and X36..X43, but routed the two failing
+  modules tried at X56..X63;
+* 10 x 1 failed in both its rows, through different nets.
+
+Where the static design puts the pins is not known before
+implementation, so the model is a shape-level bound.
+
+Measured, per region (a region "routed" when all 33 modules routed in
+it):
+
+| region (slice cols x rows) | tiles | cols | band | area margin | width margin | measured |
+|---|---|---|---|---|---|---|
+| 22 x 1, X60Y0:X81Y49 | 550 | 11 | 50 | 1.22 | 4.40 | routed |
+| 18 x 1, X36..X53 (rows 0 and 1) | 450 | 9 | 50 | **1.00** | 3.60 | routed |
+| 14 x 3, X40Y0:X53Y149 | 1050 | 7 | 92 | 2.33 | 1.31 | routed |
+| 14 x 3 + BRAM, X54Y0:X67Y149 | 1200 | 8 | 69 | 2.67 | 2.33 | routed |
+| 12 x 2, X56Y50:X67Y149 | 600 | 6 | 92 | 1.33 | 1.31 | routed |
+| 10 x 2, X44Y50:X53Y149 | 500 | 5 | 100 | 1.11 | **1.00** | routed |
+| 8 x 3, X82..X89 and X36..X43 | 600 | 4 | 138 | 1.33 | 0.58 | 2-9 of 33 failed |
+| 10 x 1, X44..X53 (rows 0 and 1) | 250 | 5 | 50 | 0.56 | 2.00 | 9 of 33 failed |
+| 10 x 3, X44Y0:X53Y149 | 750 | 5 | 138 | 1.67 | 0.67 | failed (rm_19, rm_27; see below) |
+
+**Validation.**  Each prediction below was written down before the
+region was built.
+
+| region | model | "slices >= pins/1.77, slice cols >= pins/160" | measured |
+|---|---|---|---|
+| 14 slice cols + BRAM + 2 DSP x 1 row, X90Y50:X103Y99 | routes (area 1.11) | fails (700 slices) | routed 33 |
+| 16 slice cols + BRAM + DSP x 1 row, X98Y0:X113Y49 | routes (area 1.11) | fails (800 slices) | routed 33 |
+| 12 x 3, X56Y0:X67Y149 | routes (width 1.31: a 92-row band predicted; 111 measured) | routes | routed 33 |
+| 10 x 3 + DSP, X92Y0:X101Y149 | routes (width 1.31) | routes | routed 33 |
+| 8 slice cols + BRAM + DSP x 2 rows, X90Y50:X97Y149 | routes (width 1.31, area 1.33) | fails (800 slices, 8 slice cols) | 32 of 33 routed; rm_27 failed (20 signals, vertical wires) |
+| 10 x 3, X44Y0:X53Y149 | **routes** (the first, height-blind model: width margin 1.00) | routes | **failed** |
+
+The last row refuted the first version of the model, which bounded
+width by columns alone.  Same columns as the 10 x 2 that routed, one
+row taller: Vivado spread the pins over 137 rows instead of 100, and a
+slot's in/out pins landed a median 47 rows apart instead of 9.  The
+pin band is the model's answer to that.  The two 3-row, 6-column regions
+above were built to test it.  The alternative fix, a lower width
+density for every region spanning all three rows, predicted they fail.
+They routed.
+
+The 2-row BRAM + DSP region is the model's one miss.  The 12 x 2
+region has the same margins and routed all 33.  The difference is
+where the static design put the pins: a slot's in/out pair a median 27
+rows apart in the BRAM + DSP region, 5 in the 12 x 2.  The miss was the single hardest module (it
+passes 647 of its 723 slot bits straight through).  Of the six regions
+with width margins of 1.0 to 1.31, five routed every module.  Treat a
+width margin below ~1.3 as "usually routes", not as a guarantee.
+
+The result dict reports, for a region with pins: `pins`, `pin_tiles`,
+`pin_cols`, `pin_band`, and both margins (capacity / demand).  A solve
+without `pins` builds exactly the model it always did: the HiGHS model
+files are byte-identical to the previous release's.
+
 ## Other devices
 
 `xc7z020` (the Zynq-7020 on the Pynq-Z2) ships bundled and fully
@@ -174,7 +324,10 @@ The frame constants are 7-series values measured on xc7z020, so for
 another device family re-measure them before trusting the `frames`
 objective: generate two partials with known rectangles, run
 `openflora parse-bit`, and solve for the per-column-type counts.  Notes
-in `tools/build_device_model.py`.
+in `tools/build_device_model.py`.  The `routing` section (for the
+`pins` demand) is probe-derived too; its three calibrated constants
+were measured on xc7z020 with one design, so re-measure them on
+another family before trusting the pin limits there.
 
 ## Provenance
 
@@ -200,7 +353,9 @@ The suite pins the byte-exact reproduction of the measured partials
 (sizes as fixtures; the bitstreams themselves are not shipped), the
 emitter round-trip against the hand floorplan that ran on silicon, and
 end-to-end solves on the bundled device model against the recorded
-optima.
+optima.  `tests/test_pins.py` pins the partition-pin model's verdict
+on every region measured on the real part, routed or failed, and on
+the validation regions.
 
 ## Contributing
 

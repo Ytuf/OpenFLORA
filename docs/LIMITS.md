@@ -86,6 +86,22 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
    downside; on the case study it now costs nothing (the current
    optimum uses no special columns).
 
+   **Measured sequel (2026-11-20): x=33 inside a region costs its pair
+   partner's placement.**  Four builds of RFP's GA design covered x=33
+   in a region's interior (10 slice columns x 1, 2 and 3 rows, 14 x 3).
+   Every one raised [Constraints 18-993]/[18-996] on every covered row:
+   the special column's interconnect tile (`INT_R_X33`) carries no
+   sites, so the site-range pblock does not own it, which splits its
+   interconnect pair with `INT_L_X32`.  Vivado then prohibits placement
+   in both: 100 SLICEL sites (X48, X49) per covered row, which the
+   slice model still counts as region capacity.  Module routing did use
+   `INT_L_X32` (2,923 nodes in one routed module) and never `INT_R_X33`.
+   The slice model is unchanged (correcting it changes every solve that
+   covers x=33); the partition-pin model (README "Partition pins")
+   already leaves a special column's interconnect out.  Whether x=50
+   (paired with x=51) does the same was not checked: the one recent GA
+   build that covered it (22 x 1) left no implementation log.
+
 5. **Vertical stacking and upper-row rectangles: flow-proven in round 3,
    board-proven in round 4.**  Every silicon pblock behind the original
    measured data sat in clock-region row 0, side by side.  The round-3
