@@ -41,11 +41,12 @@ costs exact rather than fingerprint-approximated.  Two extensions:
     3,005 LUTs on the 2,800 that survived the exclusion, 107.3 %).  With
     specials forced interior, edge columns carry sites and the pair
     constraints guarantee both emitted x-edges land on pair boundaries;
-  * partition-pin routability (measured failures, [Route 35-162] /
-    [Constraints 18-1000]): a region whose demand names its ``pins`` must
-    also hold them -- an area limit (pin sites) and a width limit (the
-    vertical wires the wiring between a slot's in- and out-pins crosses);
-    see PIN_AREA_DENSITY.  Without ``pins`` nothing is added.
+  * partition-pin routability (OpenFLORA's extension, not FLORA's; measured
+    failures, [Route 35-162] / [Constraints 18-1000]): a region whose demand
+    names its ``pins`` must also hold them -- an area limit (pin sites), a
+    width limit (the vertical wires the wiring between a slot's in- and
+    out-pins crosses, scaled by the ``passthrough`` bits) and its horizontal
+    counterpart.  See PIN_AREA_DENSITY.  Without ``pins`` nothing is added.
 
 Objective "wr" is FLORA's wasted-resources metric (their eq. 3) with weights
 nu_t = 1/T_t (T_t = device total of type t) and the wirelength term dropped
@@ -101,46 +102,40 @@ import highspy
 from . import frames as _frames
 from . import emit as _emit
 
-DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins")
+DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins", "passthrough")
 
-# Partition-pin routability (the optional ``pins`` demand: a region's
-# partition pins, one per bit of its ports).  On 7-series every pin is one
-# of the 16 horizontal length-1 wires of an interconnect tile inside the
-# region (a PPLOC), and the static design fixes which one before any module
-# is routed, so a region that holds its logic can still fail to route.
-# Two limits on the region's module-routable interconnect (CLB, BRAM and DSP
-# columns; a special column's interconnect has no sites, so a site-range
-# pblock cannot own it and it stays static), each a device capacity (the
-# ``routing`` section of the device model, probed from the real part) times
-# one calibrated density -- the README section "Partition pins" has the
-# measurements:
-#   area:  pins <= PIN_AREA_DENSITY * pploc_wires_per_tile * tiles
-#          Measured failure: in a 250-tile region Vivado packed up to 15
-#          pins into one tile (20 into one tile pair), and the module
-#          routes out of two neighbouring pins both needed the same node
-#          ([Constraints 18-1000], in 7 of the 9 modules that failed).
-#   width: pins * band <= PIN_CUT_DENSITY * vertical_crossings_per_tile * cols
-#          A slot's in- and out-pins land at different heights, so the
-#          wiring between them crosses the region's horizontal cut lines,
-#          which carry vertical_crossings_per_tile wires per column; the
-#          farther the pins spread, the more of that wiring crosses.  band =
-#          the rows the pins spread over: Vivado places them at about
-#          PIN_PACKING per interconnect tile of the pin columns (cols less
-#          the CLB columns covered special columns cost, device
-#          special_splits, which take no pins), so band = min(region rows,
-#          pins / (PIN_PACKING * pploc_cols)).  Measured failures: a 4-column, 150-row region ran
-#          out of north-going vertical wires (42 of its 43 overlapping
-#          nodes); a 5-column one failed at 150 rows where the same columns
-#          routed at 100.
-# The densities are those of the densest regions that routed every module
-# of the calibration design; the measured failures lie above them.
-# 0.2217: GA b666's 1,596 pins on the 18 slice col x 1 row region's 450
-# tiles x 16 (the 10 x 1 region that failed: 0.399).
-PIN_AREA_DENSITY = 1596 / (16 * 450)
-# 162.9: the same pins x their 100-row band on the 10 slice col x 2 row
-# region's 5 columns x 196 (the 10 x 3 region that failed: 1596 x 137.6 /
-# 980 = 224; the 8 x 3 regions: 280).
-PIN_CUT_DENSITY = 1596 * 100 / (196 * 5)
+# Partition-pin routability (the optional ``pins`` and ``passthrough``
+# demands).  On 7-series every partition pin is one of the 16 horizontal
+# length-1 wires of an interconnect tile inside the region (a PPLOC), and the
+# static design fixes which one before any module is routed, so a region that
+# holds its logic can still fail to route.  The limits are on the region's
+# module-routable interconnect (CLB, BRAM and DSP columns; a special column's
+# interconnect has no sites, so a site-range pblock cannot own it and it stays
+# static), each a device capacity (the ``routing`` section of the device
+# model, probed from the real part) times one calibrated density.  README
+# "Partition pins" has the measurements.  With t = pass-through bits:
+#   area:   pins <= PIN_AREA_DENSITY * pploc_wires_per_tile * tiles
+#           Failure: crowded pins (Vivado packed up to 15 into one tile)
+#           whose routes collide on a node both need.
+#   width:  t * band <= PIN_CUT_DENSITY * vertical_crossings_per_tile * cols
+#           Failure: a slot's in- and out-pins land rows apart, and the wiring
+#           between them exhausts the vertical wires across the region's
+#           middle rows.  band = min(region rows, pins / (PIN_PACKING *
+#           pploc_cols)), pploc_cols = cols less the CLB columns covered
+#           specials cost (device special_splits).
+#   height: t * cols <= PIN_CUT_DENSITY * horizontal_crossings_per_tile * rows
+#           the width limit turned 90 degrees (modeled, not observed).
+# Each density is the fit rule over every region measured with Vivado placing
+# the pins (four designs; tests/test_pins.py re-derives them): the densest
+# region that routed every module, below the least-dense failure of that
+# limit's mechanism.  No measured failure is accepted.
+# 0.2760: LeNet b3000's 1,325 pins on a 6-column, 1-row region's 300 tiles
+# x 16 (least-dense area failure: GA b666, 0.399).
+PIN_AREA_DENSITY = 1325 / (16 * 300)
+# 43.32: GA b666's 648 pass-through bits x their 91.7-row band (1,596 pins
+# packed on 6 pin columns) on a 7-column, 3-row region's 7 x 196 crossings
+# (least-dense width failure: GA b666, 50.54).
+PIN_CUT_DENSITY = 648 * (1596 / (2.9 * 6)) / (196 * 7)
 # 2.9: pins per occupied interconnect tile in the regions that had room for
 # their band (measured 2.69-2.97 in six regions; get_pplocs).
 PIN_PACKING = 2.9
@@ -161,22 +156,33 @@ def slice_demand(d):
     return -(-d.get("lut", 0) // 4)
 
 
-def pin_capacity(device, cols, rows, pins, pin_area_density=None,
-                 pin_cut_density=None, pin_packing=None):
+def passthrough_demand(d):
+    """The pass-through bits of one region's demand dict: output bits whose
+    value comes from an input pin (copied, or through logic), the most of any
+    module the region holds.  Explicit ``passthrough`` when present; otherwise
+    the worst case, every output bit, ceil(pins / 2) (in + out bits = pins)."""
+    if d.get("passthrough") is not None:
+        return d["passthrough"]
+    return -(-(d.get("pins") or 0) // 2)
+
+
+def pin_capacity(device, cols, rows, pins, passthrough=None,
+                 pin_area_density=None, pin_cut_density=None,
+                 pin_packing=None):
     """The partition-pin limits of a region covering columns ``cols`` x
-    clock-region rows ``rows`` with ``pins`` pins (see PIN_AREA_DENSITY /
-    PIN_CUT_DENSITY / PIN_PACKING), as a dict: interconnect ``tiles`` and
-    ``cols`` that route the module, ``pploc_cols`` (the columns that take
-    pins), the pins' ``band`` (rows), the area capacity
-    (pins), and both margins (capacity / demand; the region passes when both
-    are >= 1).  The width margin is the solver's: the better of its two
-    cases, band = region height or band set by the pins' packing (judged on
-    pploc_cols, a conservative reading of pins^2 / (PIN_PACKING *
-    pploc_cols) <= PIN_CUT_DENSITY * crossings * cols)."""
+    clock-region rows ``rows`` with ``pins`` pins, ``passthrough`` of them
+    passed through (default ceil(pins / 2), see ``passthrough_demand``), as a
+    dict: interconnect ``tiles`` and ``cols`` that route the module,
+    ``pploc_cols`` (the columns that take pins), the pins' ``band`` (rows),
+    the area capacity (pins), and the three margins (capacity / demand; the
+    region passes when all are >= 1).  The width margin is the solver's: the
+    better of its two cases, band = region height or band set by the pins'
+    packing, pins / (PIN_PACKING * pploc_cols)."""
     rt = _routing(device)
     da = PIN_AREA_DENSITY if pin_area_density is None else pin_area_density
     dc = PIN_CUT_DENSITY if pin_cut_density is None else pin_cut_density
     pk = PIN_PACKING if pin_packing is None else pin_packing
+    t = passthrough_demand({"pins": pins, "passthrough": passthrough})
     types = rt["module_routing_types"]
     rcols = [c for c in cols if device.col_type(c) in types]
     nspec = sum(len(device.special_splits.get(c, ())) for c in cols)
@@ -187,11 +193,17 @@ def pin_capacity(device, cols, rows, pins, pin_area_density=None,
     band = min(height, pins / (pk * pcols)) if pcols > 0 else height
     k = dc * rt["vertical_crossings_per_tile"]
     area = da * rt["pploc_wires_per_tile"] * tiles
-    by_height = k * len(rcols) / (pins * height)
-    by_packing = (pcols / (pins / (pk * k) ** 0.5)) ** 2 if pcols > 0 else 0.0
+    big = float("inf")
+    by_height = k * len(rcols) / (t * height) if t else big
+    by_packing = (pcols * len(rcols) * pk * k / (t * pins)
+                  if t and pcols > 0 else (big if not t else 0.0))
+    across = (dc * rt["horizontal_crossings_per_tile"] * height
+              / (t * len(rcols)) if t else big)
     return {"tiles": tiles, "cols": len(rcols), "pploc_cols": pcols,
-            "band": band, "area_capacity": area, "area_margin": area / pins,
-            "width_margin": max(by_height, by_packing)}
+            "band": band, "passthrough": t, "area_capacity": area,
+            "area_margin": area / pins,
+            "width_margin": max(by_height, by_packing),
+            "height_margin": across}
 
 
 def _routing(device):
@@ -442,21 +454,37 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             rcols = [c for c in xs if cols[c]["type"] in types]
             tiles = sum(rt["int_tiles_per_cell"] * w[i][(c, r)]
                         for c in rcols for r in range(nrows) if cell_ok(c, r))
-            h.addConstr(da * rt["pploc_wires_per_tile"] * tiles >= pins)
-            # width: pins * band <= k * cols, band = min(height, pins /
-            # (pk * pploc_cols)) -- one binary picks the case: z = 0, the
-            # band is the region's height; z = 1, the pins pack into fewer
-            # rows, which suffices when pploc_cols >= pins / sqrt(pk * k)
+            t = passthrough_demand(d)
             k = dc * rt["vertical_crossings_per_tile"]
             ncols = sum(cov[i][c] for c in rcols)
             nspec = sum(len(device.special_splits.get(c, ())) * cov[i][c]
                         for c in xs)
+            smax = sum(len(v) for v in device.special_splits.values())
             height = sum(rt["int_tiles_per_cell"] * row[i][r]
                          for r in range(nrows))
-            z = h.addBinary()
-            h.addConstr(pins * height <= k * ncols
-                        + pins * rt["int_tiles_per_cell"] * nrows * z)
-            h.addConstr(ncols - nspec >= pins / (pk * k) ** 0.5 * z)
+            h.addConstr(da * rt["pploc_wires_per_tile"] * tiles >= pins)
+            # width: t * band <= k * cols (t = pass-through bits), band =
+            # min(height, pins / (pk * pploc_cols)) -- one binary picks the
+            # case: z = 0, the band is the region's height; z = 1, the pins
+            # pack into fewer rows, which suffices when pploc_cols * cols >=
+            # X = t * pins / (pk * k).  With p = pploc_cols and s = cols - p
+            # (the columns covered specials cost, an integer), that is p >=
+            # g(s) = (sqrt(s^2 + 4X) - s) / 2, convex in s; its tangents at
+            # every integer s0 make the cut exact at every integer s.
+            if t:
+                z = h.addBinary()
+                h.addConstr(t * height <= k * ncols
+                            + t * rt["int_tiles_per_cell"] * nrows * z)
+                X = t * pins / (pk * k)
+                for s0 in range(smax + 1):
+                    g = ((s0 * s0 + 4 * X) ** 0.5 - s0) / 2
+                    dg = (s0 / (s0 * s0 + 4 * X) ** 0.5 - 1) / 2
+                    h.addConstr(ncols - nspec - dg * nspec
+                                >= (g - dg * s0) * z)
+                # height (the same limit across vertical cut lines, by
+                # symmetry; the pins' horizontal spread bounded by cols)
+                h.addConstr(t * ncols <= dc
+                            * rt["horizontal_crossings_per_tile"] * height)
         # hb: BRAM presence per row (content-pad accounting)
         for c in xs:
             if cols[c]["type"] == "BRAM":
@@ -658,13 +686,17 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             # the routability limits on the solved rectangle (margin =
             # capacity / demand, >= 1 by construction)
             pins = demands[i]["pins"]
-            pcap = pin_capacity(device, ccols, rrows, pins, pin_area_density,
-                                pin_cut_density, pin_packing)
+            pcap = pin_capacity(device, ccols, rrows, pins,
+                                demands[i].get("passthrough"),
+                                pin_area_density, pin_cut_density, pin_packing)
             out["regions"][i].update({
-                "pins": pins, "pin_tiles": pcap["tiles"],
+                "pins": pins, "passthrough": pcap["passthrough"],
+                "passthrough_derived": demands[i].get("passthrough") is None,
+                "pin_tiles": pcap["tiles"],
                 "pin_cols": pcap["cols"], "pin_band": pcap["band"],
                 "pin_area_margin": pcap["area_margin"],
-                "pin_width_margin": pcap["width_margin"]})
+                "pin_width_margin": pcap["width_margin"],
+                "pin_height_margin": pcap["height_margin"]})
         if wl_active:
             # centroid reported in device (col_x, row) units -- cy is stored
             # scaled internally, so unscale the row back for reporting.

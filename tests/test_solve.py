@@ -229,8 +229,9 @@ def test_csv_reader(fp, tmp_path):
     p.write_text("a,1,2,3\n")
     with pytest.raises(ValueError):
         fp.cli.read_demands_csv(str(p))
-    # (seven fields is the optional pins column -- tests/test_pins.py)
-    p.write_text("a,1,2,3,4,9,9,9\n")
+    # (seven and eight fields are the optional pins and passthrough
+    # columns -- tests/test_pins.py, tests/test_pin_plan.py)
+    p.write_text("a,1,2,3,4,9,9,9,9\n")
     with pytest.raises(ValueError):
         fp.cli.read_demands_csv(str(p))
     # negative slices fail loudly

@@ -7,9 +7,11 @@ The demands CSV carries one row per reconfigurable region, modeled on the
 demand table of the FLORA paper (resource requirements per region as
 LUT / FF / BRAM / DSP counts) plus an optional ``slices`` column
 (measured occupied slices -- report_utilization -pblocks, "Slice" row, on
-a routed design) and, after it, an optional ``pins`` column (the region's
+a routed design), then an optional ``pins`` column (the region's
 partition pins, one per bit of its ports, which adds the routability
-limits -- milp.PIN_AREA_DENSITY / PIN_CUT_DENSITY):
+limits -- milp.PIN_AREA_DENSITY / PIN_CUT_DENSITY) and an optional
+``passthrough`` column (the most output bits any of the region's modules
+takes from its input pins; the worst case ceil(pins / 2) when absent):
 
     name,lut,ff,bram,dsp,slices
     rp0,2874,2026,0,12,1127
@@ -39,10 +41,10 @@ def read_demands_csv(path):
             if not line or line.startswith("#"):
                 continue
             fields = [x.strip() for x in line.split(",")]
-            if len(fields) not in (5, 6, 7):
-                raise ValueError("expected 5 to 7 fields (name,lut,ff,bram,"
-                                 "dsp[,slices[,pins]]), got %d: %r"
-                                 % (len(fields), line))
+            if len(fields) not in (5, 6, 7, 8):
+                raise ValueError("expected 5 to 8 fields (name,lut,ff,bram,"
+                                 "dsp[,slices[,pins[,passthrough]]]), got %d: "
+                                 "%r" % (len(fields), line))
             if not all(x.lstrip("-").isdigit() for x in fields[1:]):
                 # header row (or a malformed line found later)
                 if not demands:
@@ -55,9 +57,15 @@ def read_demands_csv(path):
             d = {"lut": lut, "ff": ff, "bram": bram, "dsp": dsp}
             if len(fields) >= 6:
                 d["slices"] = int(fields[5])
-            if len(fields) == 7:
+            if len(fields) >= 7:
                 d["pins"] = int(fields[6])
-            for label in ("lut", "ff", "bram", "dsp", "slices", "pins"):
+            if len(fields) == 8:
+                d["passthrough"] = int(fields[7])
+                if d["passthrough"] > d["pins"]:
+                    raise ValueError("passthrough %d exceeds pins %d for %s"
+                                     % (d["passthrough"], d["pins"], name))
+            for label in ("lut", "ff", "bram", "dsp", "slices", "pins",
+                          "passthrough"):
                 if d.get(label, 0) < 0:
                     raise ValueError("negative %s demand for %s"
                                      % (label, name))
@@ -67,9 +75,34 @@ def read_demands_csv(path):
     return demands
 
 
+def read_pins_csv(path):
+    """The pins file for a partition-pin plan: one row per partition pin,
+    ``region,pin[,pair]`` -- ``pair`` names the pin to place in the same
+    interconnect tile (a slot's out-pin next to its in-pin).  Returns
+    {region: (pins in file order, [(pin, pair)])}."""
+    out = {}
+    with open(path) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = [x.strip() for x in line.split(",")]
+            if len(fields) not in (2, 3):
+                raise ValueError("expected region,pin[,pair], got %r" % line)
+            pins, pairs = out.setdefault(fields[0], ([], []))
+            pins.append(fields[1])
+            if len(fields) == 3 and fields[2]:
+                pairs.append((fields[1], fields[2]))
+    return out
+
+
 def cmd_plan(args):
     dev = device.load_device(args.device)
     demands = read_demands_csv(args.csv)
+    if args.pin_plan is not None and args.pin_plan < 1:
+        raise SystemExit("--pin-plan N needs N >= 1 (pins per tile)")
+    if args.pins_file and not args.pin_plan:
+        raise SystemExit("--pins-file needs --pin-plan N (pins per tile)")
     result = milp.solve(dev, demands, objective=args.objective,
                         derate=args.derate, headroom=args.headroom,
                         forbid_specials=args.forbid_specials,
@@ -91,8 +124,19 @@ def cmd_plan(args):
                 raise SystemExit("--cell expects NAME=HIER/PATH, got %r" % spec)
             name, path = spec.split("=", 1)
             cells[name] = path
+        text = emit.xdc_text(regions, cells=cells or None, header=header)
+        if args.pins_file:
+            # partition-pin plans for the regions bound to a cell
+            for name, (pins, pairs) in read_pins_csv(args.pins_file).items():
+                if name not in cells:
+                    raise SystemExit("--pins-file region %r has no --cell" % name)
+                r = result["regions"][name]
+                plan = emit.partpin_plan(dev, r["cols"], r["rows"], pins, pairs,
+                                         per_tile=args.pin_plan)
+                text += "\n".join(["# partition-pin plan: %s" % name]
+                                  + emit.partpin_xdc(cells[name], plan)) + "\n"
         with open(args.out_xdc, "w") as f:
-            f.write(emit.xdc_text(regions, cells=cells or None, header=header))
+            f.write(text)
         print("wrote %s" % args.out_xdc, file=sys.stderr)
     if args.out_json:
         with open(args.out_json, "w") as f:
@@ -122,11 +166,13 @@ def main(argv=None):
 
     p = sub.add_parser("plan", help="solve a floorplan from a demands CSV")
     p.add_argument("--csv", required=True,
-                   help="demands CSV: name,lut,ff,bram,dsp[,slices[,pins]] "
-                        "per region (bram in RAMB18 units; slices = measured "
-                        "occupied slices, defaults to the optimistic "
-                        "ceil(lut/4) when absent; pins = partition pins, "
-                        "which add the routability limits)")
+                   help="demands CSV: name,lut,ff,bram,dsp[,slices[,pins"
+                        "[,passthrough]]] per region (bram in RAMB18 units; "
+                        "slices = measured occupied slices, defaults to the "
+                        "optimistic ceil(lut/4) when absent; pins = partition "
+                        "pins, which add the routability limits; passthrough "
+                        "= output bits taken from input pins, worst case "
+                        "ceil(pins/2) when absent)")
     p.add_argument("--device", default="xc7z020",
                    help="bundled device name or path to a device-model JSON "
                         "(bundled: %s)" % ", ".join(device.list_devices()))
@@ -151,6 +197,15 @@ def main(argv=None):
     p.add_argument("--static-bram", type=int, default=0,
                    help="RAMB18 that must remain outside all regions "
                         "(static-design reservation)")
+    p.add_argument("--pin-plan", type=int, default=None, metavar="N",
+                   help="with --pins-file and --cell, the XDC also places the "
+                        "regions' partition pins (HD.PARTPIN_LOCS), at most N "
+                        "per interconnect tile, each pair in one tile.  The "
+                        "solver does not count on the plan (README 'Pin "
+                        "placement')")
+    p.add_argument("--pins-file",
+                   help="region,pin[,pair] rows: the regions' partition pins "
+                        "for --pin-plan")
     p.add_argument("--out-pblocks", help="write pblocks.txt-format ranges here")
     p.add_argument("--out-xdc", help="write Vivado XDC constraints here")
     p.add_argument("--out-json", help="write the full result JSON here")

@@ -290,6 +290,14 @@ def build(probe_path, specials_log=None):
                                  % sorted(per_cell))
         facts["int_tiles_per_cell"] = per_cell.pop()
         facts["module_routing_types"] = ["CLB", "BRAM", "DSP"]
+        # the interconnect tile type of each column (pin plans name INT tiles)
+        sides = {}
+        for (side, x) in int_rows:
+            if x in cols:
+                if sides.get(x, side) != side:
+                    raise AssertionError("column %d has INT_L and INT_R" % x)
+                sides[x] = side
+        facts["int_tile_types"] = {str(x): sides[x] for x in sorted(sides)}
         model["routing"] = facts
     # ---- special columns that cost a CLB column (tools/probe_specials.py) --
     # special x -> the CLB columns Vivado prohibits placement in while a

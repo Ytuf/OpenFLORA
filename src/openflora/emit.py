@@ -5,7 +5,8 @@ Two output formats:
     separated by a blank line, '#' comments (a simple exchange format some
     DPR build flows consume directly);
   * XDC -- Vivado Tcl constraints (create_pblock / resize_pblock /
-    add_cells_to_pblock / RESET_AFTER_RECONFIG), syntax per UG909.
+    add_cells_to_pblock / RESET_AFTER_RECONFIG), syntax per UG909, and
+    optionally a partition-pin plan (HD.PARTPIN_LOCS, ``partpin_plan``).
 
 Site-range serialization is exact for the bundled device models: covered
 tile columns map back to SLICE / DSP48 / RAMB18+RAMB36 site ranges.  On
@@ -96,3 +97,80 @@ def xdc_text(regions, cells=None, reset_after_reconfig=True,
                        % cells[name])
         out.append("")
     return "\n".join(out)
+
+
+def partpin_tiles(device, cols, rows, trim=1):
+    """The interconnect tiles a region's partition pins may take, row by row:
+    the region's module-routable columns (less the CLB columns covered
+    special columns cost) over its interconnect rows, less ``trim`` rows at
+    the region's top and bottom edge (two pins in one edge tile left a node
+    overlap, RFP's GA build, 2026-11-18)."""
+    rt = device.raw["routing"]
+    types = rt["module_routing_types"]
+    n = rt["int_tiles_per_cell"]
+    lost = set(c for x in cols for c in device.special_splits.get(x, ()))
+    pcols = [c for c in sorted(cols)
+             if device.col_type(c) in types and c not in lost]
+    rows = sorted(rows)
+    y0 = n * rows[0] + trim
+    y1 = n * rows[-1] + n - 1 - trim
+    return ["%s_X%dY%d" % (rt["int_tile_types"][str(c)], c, y)
+            for y in range(y0, y1 + 1) for c in pcols]
+
+
+def partpin_plan(device, cols, rows, pins, pairs=(), per_tile=4, trim=1):
+    """A partition-pin plan for one region: [(pin, INT tile)].
+
+    pins: the region's partition pins (port bits; clock and other global
+    pins excluded), in a stable order; pairs: (in_pin, out_pin) couples to
+    put in one tile -- a module that copies the in-pin to the out-pin then
+    wires them locally, whatever the static design wants.  Pins are spread
+    evenly over ``partpin_tiles`` at no more than ``per_tile`` a tile
+    (Vivado's own target is PARTPIN_SPREADING, default 5).  Raises
+    ValueError when the region cannot take the pins.
+
+    Measured (README "Pin placement"): in a 4-column, 3-row region a plan of
+    at most 4 a tile routed 12 of 16 modules, 5 of which failed there with
+    Vivado's own pins; a plan of up to 8 a tile failed for crowding.  The
+    solver does not count on a plan."""
+    tiles = partpin_tiles(device, cols, rows, trim)
+    names = list(pins)
+    if len(set(names)) != len(names):
+        raise ValueError("duplicate pin names")
+    partner = {}
+    for a, b in pairs:
+        if a not in partner and b not in partner and a != b:
+            partner[a], partner[b] = b, a
+    if per_tile < 2 and partner:
+        raise ValueError("a pin plan with pairs needs per_tile >= 2")
+    if len(names) > per_tile * len(tiles):
+        raise ValueError("%d pins exceed %d tiles x %d" % (len(names), len(tiles),
+                                                           per_tile))
+    groups, seen = [], set()
+    for p in names:
+        if p in seen:
+            continue
+        g = [p, partner[p]] if p in partner and partner[p] in names else [p]
+        seen.update(g)
+        groups.append(g)
+    step = len(tiles) / float(len(names))
+    load = [0] * len(tiles)
+    plan, k = [], 0.0
+    for g in groups:
+        t = int(k) % len(tiles)
+        for _ in range(len(tiles)):
+            if load[t] + len(g) <= per_tile:
+                break
+            t = (t + 1) % len(tiles)
+        else:
+            raise ValueError("no tile left for %s" % g)
+        load[t] += len(g)
+        plan.extend((p, tiles[t]) for p in g)
+        k += len(g) * step
+    return plan
+
+
+def partpin_xdc(cell, plan):
+    """XDC lines placing ``plan``'s pins of hierarchical ``cell``."""
+    return ["set_property HD.PARTPIN_LOCS %s [get_pins {%s/%s}]" % (t, cell, p)
+            for p, t in plan]
