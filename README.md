@@ -257,8 +257,10 @@ bits straight through, which is what loads the width limit.  A design
 whose modules pass fewer bits through is bounded conservatively.  Two
 regions of the same shape can still differ:
 
-* 8 x 3 failed at X82..X89 and X36..X43, but routed the two failing
-  modules tried at X56..X63;
+* 8 x 3 failed in all three placements, by very different margins.
+  At X82..X89, rm_18 left 43 overlapping nodes and rm_19 about 2,000.
+  At X56..X63, rm_18 and rm_22 routed, and rm_19 left 9 nets in
+  conflict;
 * 10 x 1 failed in both its rows, through different nets.
 
 Where the static design puts the pins is not known before
@@ -275,7 +277,7 @@ it):
 | 14 x 3 + BRAM, X54Y0:X67Y149 | 1200 | 8 | 69 | 2.67 | 2.33 | routed |
 | 12 x 2, X56Y50:X67Y149 | 600 | 6 | 92 | 1.33 | 1.31 | routed |
 | 10 x 2, X44Y50:X53Y149 | 500 | 5 | 100 | 1.11 | **1.00** | routed |
-| 8 x 3, X82..X89 and X36..X43 | 600 | 4 | 138 | 1.33 | 0.58 | 2-9 of 33 failed |
+| 8 x 3, X82..X89, X56..X63, X36..X43 | 600 | 4 | 138 | 1.33 | 0.58 | 2-9 of 33 failed |
 | 10 x 1, X44..X53 (rows 0 and 1) | 250 | 5 | 50 | 0.56 | 2.00 | 9 of 33 failed |
 | 10 x 3, X44Y0:X53Y149 | 750 | 5 | 138 | 1.67 | 0.67 | failed (rm_19, rm_27; see below) |
 

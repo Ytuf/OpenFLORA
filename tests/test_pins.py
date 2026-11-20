@@ -22,6 +22,7 @@ MEASURED = [
     (range(30, 36), [1, 2], True),       # 10 x 2 (X44..X53)
     (range(52, 56), [0, 1, 2], False),   # 8 x 3 (X82..X89)
     (range(26, 30), [0, 1, 2], False),   # 8 x 3 (X36..X43)
+    (range(38, 42), [0, 1, 2], False),   # 8 x 3 (X56..X63): rm_19, 9 nets
     (range(30, 36), [1], False),         # 10 x 1 (X44..X53, 500 slices)
     (range(30, 36), [0], False),         # 10 x 1, the other region
     (range(30, 36), [0, 1, 2], False),   # 10 x 3: refuted the first, height-blind model
