@@ -5,9 +5,11 @@
 
 The demands CSV carries one row per reconfigurable region, modeled on the
 demand table of the FLORA paper (resource requirements per region as
-LUT / FF / BRAM / DSP counts) plus an optional trailing ``slices`` column
+LUT / FF / BRAM / DSP counts) plus an optional ``slices`` column
 (measured occupied slices -- report_utilization -pblocks, "Slice" row, on
-a routed design):
+a routed design) and, after it, an optional ``pins`` column (the region's
+partition pins, one per bit of its ports, which adds the routability
+limits -- milp.PIN_AREA_DENSITY / PIN_CUT_DENSITY):
 
     name,lut,ff,bram,dsp,slices
     rp0,2874,2026,0,12,1127
@@ -37,9 +39,9 @@ def read_demands_csv(path):
             if not line or line.startswith("#"):
                 continue
             fields = [x.strip() for x in line.split(",")]
-            if len(fields) not in (5, 6):
-                raise ValueError("expected 5 or 6 fields (name,lut,ff,bram,"
-                                 "dsp[,slices]), got %d: %r"
+            if len(fields) not in (5, 6, 7):
+                raise ValueError("expected 5 to 7 fields (name,lut,ff,bram,"
+                                 "dsp[,slices[,pins]]), got %d: %r"
                                  % (len(fields), line))
             if not all(x.lstrip("-").isdigit() for x in fields[1:]):
                 # header row (or a malformed line found later)
@@ -51,9 +53,11 @@ def read_demands_csv(path):
                 raise ValueError("duplicate region name %r" % name)
             lut, ff, bram, dsp = (int(x) for x in fields[1:5])
             d = {"lut": lut, "ff": ff, "bram": bram, "dsp": dsp}
-            if len(fields) == 6:
+            if len(fields) >= 6:
                 d["slices"] = int(fields[5])
-            for label in ("lut", "ff", "bram", "dsp", "slices"):
+            if len(fields) == 7:
+                d["pins"] = int(fields[6])
+            for label in ("lut", "ff", "bram", "dsp", "slices", "pins"):
                 if d.get(label, 0) < 0:
                     raise ValueError("negative %s demand for %s"
                                      % (label, name))
@@ -118,10 +122,11 @@ def main(argv=None):
 
     p = sub.add_parser("plan", help="solve a floorplan from a demands CSV")
     p.add_argument("--csv", required=True,
-                   help="demands CSV: name,lut,ff,bram,dsp[,slices] per "
-                        "region (bram in RAMB18 units; slices = measured "
+                   help="demands CSV: name,lut,ff,bram,dsp[,slices[,pins]] "
+                        "per region (bram in RAMB18 units; slices = measured "
                         "occupied slices, defaults to the optimistic "
-                        "ceil(lut/4) when absent)")
+                        "ceil(lut/4) when absent; pins = partition pins, "
+                        "which add the routability limits)")
     p.add_argument("--device", default="xc7z020",
                    help="bundled device name or path to a device-model JSON "
                         "(bundled: %s)" % ", ".join(device.list_devices()))
