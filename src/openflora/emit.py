@@ -170,6 +170,38 @@ def partpin_plan(device, cols, rows, pins, pairs=(), per_tile=4, trim=1):
     return plan
 
 
+def partpin_cut_demand(plan, pairs):
+    """The cut demand a fixed pin plan implies: for every horizontal cut line
+    between two interconnect rows and every vertical one between two
+    interconnect columns, how many ``pairs`` (in_pin, out_pin) have their pins
+    on opposite sides.  Each such pair's module route must cross that line,
+    on its own wire (the in-pin is its own net), so this is a lower bound on
+    the wires the module needs across the cut -- exact from the plan, not
+    modeled.  Returns {"horizontal": most over horizontal cuts, "vertical":
+    most over vertical cuts}.  A plan from ``partpin_plan`` puts each pair in
+    one tile, so both are 0."""
+    loc = dict(plan)
+
+    def xy(tile):
+        x, y = tile.split("_X")[1].split("Y")
+        return int(x), int(y)
+
+    def most(spans):
+        events = []
+        for lo, hi in spans:
+            if hi > lo:
+                events += [(lo, 1), (hi, -1)]
+        best = cur = 0
+        for _pos, step in sorted(events):
+            cur += step
+            best = max(best, cur)
+        return best
+
+    split = [(xy(loc[a]), xy(loc[b])) for a, b in pairs if a in loc and b in loc]
+    return {"horizontal": most([(min(p[1], q[1]), max(p[1], q[1])) for p, q in split]),
+            "vertical": most([(min(p[0], q[0]), max(p[0], q[0])) for p, q in split])}
+
+
 def partpin_xdc(cell, plan):
     """XDC lines placing ``plan``'s pins of hierarchical ``cell``."""
     return ["set_property HD.PARTPIN_LOCS %s [get_pins {%s/%s}]" % (t, cell, p)

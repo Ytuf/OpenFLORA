@@ -1,5 +1,5 @@
-"""Partition-pin plans (emit.partpin_plan, the CLI's --pin-plan / --pins-file) and the
-pass-through demand."""
+"""Partition-pin plans: emit.partpin_plan, partpin_cut_demand, and the CLI's
+--pin-plan / --pins-file."""
 import pytest
 
 GA_PINS = 1596
@@ -55,31 +55,9 @@ def test_plan_xdc(fp, dev):
                         "[get_pins {top/rp0_inst/i0[0]}]")
 
 
-def test_passthrough_default_is_half_the_pins(fp):
-    assert fp.milp.passthrough_demand({"pins": 1596}) == 798
-    assert fp.milp.passthrough_demand({"pins": 1595}) == 798
-    assert fp.milp.passthrough_demand({"pins": 1596, "passthrough": 648}) == 648
-    assert fp.milp.passthrough_demand({"pins": 1596, "passthrough": 0}) == 0
-
-
-def test_passthrough_eases_width(fp, dev):
-    cols, rows = list(range(22, 26)), [0, 1, 2]       # 4 columns, full height
-    worst = fp.milp.pin_capacity(dev, cols, rows, 1325)
-    low = fp.milp.pin_capacity(dev, cols, rows, 1325, passthrough=133)
-    assert low["width_margin"] > worst["width_margin"]
-    assert low["area_margin"] == worst["area_margin"]
-
-
-def test_csv_passthrough_column(fp, tmp_path):
+def test_csv_eighth_column_is_an_error(fp, tmp_path):
     p = tmp_path / "d.csv"
-    p.write_text("name,lut,ff,bram,dsp,slices,pins,passthrough\n"
-                 "rp0,446,1738,0,0,1000,1596,648\n")
-    d = fp.cli.read_demands_csv(str(p))
-    assert d["rp0"]["pins"] == 1596 and d["rp0"]["passthrough"] == 648
-    p.write_text("rp0,446,1738,0,0,1000,1596,1600\n")
-    with pytest.raises(ValueError):          # more pass-through than pins
-        fp.cli.read_demands_csv(str(p))
-    p.write_text("rp0,446,1738,0,0,1000,1596,648,1\n")
+    p.write_text("rp0,446,1738,0,0,1000,1596,648\n")
     with pytest.raises(ValueError):
         fp.cli.read_demands_csv(str(p))
 
@@ -91,22 +69,31 @@ def test_pins_file(fp, tmp_path):
     assert got == {"rp0": (["i0[0]", "o0[0]", "mem0"], [("i0[0]", "o0[0]")])}
 
 
+def test_plan_cut_demand(fp, dev):
+    """A fixed plan makes the cut demand exact: the pairs whose pins sit on
+    opposite sides of a cut line.  partpin_plan puts each pair in one tile,
+    so it is 0; splitting one pair across rows makes it 1."""
+    pins, pairs = ga_pins()
+    plan = fp.emit.partpin_plan(dev, list(range(52, 56)), [0, 1, 2], pins, pairs,
+                                per_tile=4)
+    assert fp.emit.partpin_cut_demand(plan, pairs) == {"horizontal": 0, "vertical": 0}
+    loc = dict(plan)
+    loc[pairs[0][1]] = "INT_L_X52Y140"
+    loc[pairs[0][0]] = "INT_L_X52Y2"
+    demand = fp.emit.partpin_cut_demand(list(loc.items()), pairs)
+    assert demand == {"horizontal": 1, "vertical": 0}
+
+
 def test_plan_measurements(fp, dev):
     """The pin-plan builds (GA b666, xc7z020).  E3 / E3v: two 1-row,
     8-column regions routed every module with a plan of at most 5 a tile and
-    without one, and the model accepts them as they are.  E2: two 4-column,
-    3-row regions; a plan routed 12 of 16 modules but not all, and the model
-    rejects them (the solver gives a plan no credit)."""
-    m = fp.milp
+    without one; the site constraint accepts them as they are, and the plan
+    has 384 pin tiles."""
     for cols in (range(36, 44), range(56, 64)):
-        r = m.pin_capacity(dev, list(cols), [1], GA_PINS, 648)
-        assert min(r["area_margin"], r["width_margin"],
-                   r["height_margin"]) >= 1 - 1e-9
+        r = fp.milp.pin_capacity(dev, list(cols), [1], GA_PINS)
+        assert r["margin"] >= 1 - 1e-9
         plan = fp.emit.partpin_plan(dev, list(cols), [1], *ga_pins(), per_tile=5)
         assert len(set(t for _p, t in plan)) == 384
-    for cols in (range(52, 56), range(38, 42)):
-        r = m.pin_capacity(dev, list(cols), [0, 1, 2], GA_PINS, 648)
-        assert r["width_margin"] < 1
 
 
 def test_cli_pin_plan_xdc(fp, tmp_path, capsys):
@@ -114,7 +101,7 @@ def test_cli_pin_plan_xdc(fp, tmp_path, capsys):
     the regions bound to a cell, each pair in one tile."""
     pins, pairs = ga_pins()
     d = tmp_path / "d.csv"
-    d.write_text("rp0,446,1738,0,0,1000,%d,648\nrp1,446,1738,0,0,1000,%d,648\n"
+    d.write_text("rp0,446,1738,0,0,1000,%d\nrp1,446,1738,0,0,1000,%d\n"
                  % (GA_PINS, GA_PINS))
     pf = tmp_path / "pins.csv"
     pair_of = dict(pairs)

@@ -1,30 +1,32 @@
-"""Partition-pin routability: the optional ``pins`` and ``passthrough``
-demands (milp.PIN_AREA_DENSITY, PIN_CUT_DENSITY, PIN_PACKING; README
-"Partition pins").
+"""Partition-pin sites: the optional ``pins`` demand (milp.PIN_HEADROOM,
+``pin_headroom``; README "Partition pins").
 
+The constraint is exact at pin_headroom 1 (one pin per routing node of the
+region's module-routable interconnect tiles) and calibrated below it.
 MEASURED is every region built on the real part (xc7z020, Vivado 2019.1)
 with Vivado placing the partition pins, for four RFP designs.  A region
 "routed" when every module built in it routed, and "failed" when at least
 one did not, attributed to the region and to a mechanism by the location of
 the overlapping nodes: "area" (collisions among crowded pins) or "width"
-(vertical wires across the middle rows).  "pred" marks a region whose
-verdict was predicted and recorded before it was built.
+(vertical wires across the middle rows; not modeled).  "pred" marks a
+region whose verdict was predicted and recorded before it was built (under
+the model of the time).
 
-The calibrated densities are the fit rule applied to this table: for each
-limit, the densest routed region below the least-dense failure of that
-limit's mechanism.  So no measured failure is accepted, and the regions that
-routed above a constant are listed (SAFE_MISSES) rather than hidden."""
+PIN_HEADROOM is the fit rule over this table: the densest routed region
+below the least-dense area failure.  No area failure is accepted.  The width
+failures are accepted (the model does not cover them: docs/LIMITS.md) and
+listed in ACCEPTED_FAILURES; the routed regions the headroom rejects are
+listed in SAFE_MISSES."""
 import pytest
 
-# pins, pass-through (the most of any module): port bits of the region,
-# output bits taken from an input pin (copied or computed)
+# partition pins: port bits of the region, clock excluded
 DESIGNS = {
-    "ga_b666": (1596, 648),       # RFP GA, 33 modules
-    "ga_b445": (2050, 809),       # RFP GA, 46 modules
-    "sobel_b200": (1472, 586),    # RFP sobel, 13 modules
-    "lenet_b3000": (1325, 133),   # RFP LeNet, 5 modules
+    "ga_b666": 1596,       # RFP GA, 33 modules
+    "ga_b445": 2050,       # RFP GA, 46 modules
+    "sobel_b200": 1472,    # RFP sobel, 13 modules
+    "lenet_b3000": 1325,   # RFP LeNet, 5 modules
 }
-GA_PINS, GA_PASS = DESIGNS["ga_b666"]
+GA_PINS = DESIGNS["ga_b666"]
 GA = {"lut": 446, "ff": 1738, "bram": 0, "dsp": 0, "slices": 1000}
 
 # (design, first and last interconnect column, rows, verdict, mechanism, when)
@@ -72,69 +74,74 @@ MEASURED = [
     ('ga_b666', 24, 29, [1, 2], 'failed', 'width', 'pred'),   # S6c rp0 (rm_13, 21, 19, 27 of the 14 hardest; north-going)
     ('ga_b666', 56, 61, [0, 1], 'routed', '', 'pred'),   # S6c rp1 (14 hardest modules)
 ]
-# routed, and rejected by the calibrated constants (a conservative miss)
+# accepted by the default headroom, and failed (all width: not modeled)
+ACCEPTED_FAILURES = [
+    ('ga_b666', 52, 55, [0, 1, 2]),
+    ('ga_b666', 26, 29, [0, 1, 2]),
+    ('ga_b666', 38, 41, [0, 1, 2]),
+    ('ga_b666', 30, 35, [0, 1, 2]),
+    ('ga_b666', 56, 61, [1, 2]),
+    ('sobel_b200', 58, 61, [0, 1, 2]),
+    ('ga_b666', 38, 43, [0, 1]),
+    ('ga_b666', 24, 29, [1, 2]),
+]
+# routed, and rejected by the default headroom (a conservative miss)
 SAFE_MISSES = [
-    ('ga_b666', 38, 43, [1, 2]),
-    ('ga_b666', 30, 35, [1, 2]),
-    ('ga_b666', 38, 43, [0, 1, 2]),
-    ('ga_b666', 58, 63, [0, 1, 2]),
-    ('ga_b445', 38, 43, [1, 2]),
-    ('ga_b445', 28, 35, [0, 1]),
-    ('sobel_b200', 22, 25, [0, 1, 2]),
     ('lenet_b3000', 58, 63, [1]),
-    ('ga_b666', 58, 63, [1, 2]),
-    ('ga_b666', 20, 25, [1, 2]),
-    ('ga_b666', 66, 71, [1, 2]),
-    ('ga_b666', 58, 63, [0, 1]),
-    ('ga_b666', 60, 65, [1, 2]),
-    ('ga_b666', 56, 61, [0, 1]),
 ]
 
 
-def margins(fp, dev, design, c0, c1, rows, **kw):
-    pins, t = DESIGNS[design]
-    return fp.milp.pin_capacity(dev, list(range(c0, c1 + 1)), rows, pins, t, **kw)
+def cap(fp, dev, design, c0, c1, rows, **kw):
+    return fp.milp.pin_capacity(dev, list(range(c0, c1 + 1)), rows,
+                                DESIGNS[design], **kw)
 
 
 def accepted(r):
-    return min(r["area_margin"], r["width_margin"],
-               r["height_margin"]) >= 1 - 1e-9
+    return r["margin"] >= 1 - 1e-9
 
 
-def densities(fp, dev, x):
-    r = margins(fp, dev, *x[:4])
-    return (fp.milp.PIN_AREA_DENSITY / r["area_margin"],
-            fp.milp.PIN_CUT_DENSITY / r["width_margin"])
+def use(fp, dev, x):
+    """Pins per partition-pin site of a measured region."""
+    r = cap(fp, dev, *x[:4])
+    return DESIGNS[x[0]] / r["sites"]
 
 
-@pytest.mark.parametrize("x", [x for x in MEASURED if x[4] == "failed"],
+@pytest.mark.parametrize("x", [x for x in MEASURED if x[5] == "area"],
                          ids=lambda x: "%s-%d-%d-%s" % (x[0], x[1], x[2], x[3]))
-def test_no_measured_failure_is_accepted(fp, dev, x):
-    assert not accepted(margins(fp, dev, *x[:4]))
+def test_no_area_failure_is_accepted(fp, dev, x):
+    assert not accepted(cap(fp, dev, *x[:4]))
 
 
-def test_accepted_regions_routed_and_misses_listed(fp, dev):
-    rejected = [x[:4] for x in MEASURED
-                if x[4] == "routed" and not accepted(margins(fp, dev, *x[:4]))]
-    assert sorted(rejected) == sorted(SAFE_MISSES)
+def test_classification_is_recorded(fp, dev):
+    acc_fail = [x[:4] for x in MEASURED
+                if x[4] == "failed" and accepted(cap(fp, dev, *x[:4]))]
+    miss = [x[:4] for x in MEASURED
+            if x[4] == "routed" and not accepted(cap(fp, dev, *x[:4]))]
+    assert sorted(acc_fail) == sorted(ACCEPTED_FAILURES)
+    assert sorted(miss) == sorted(SAFE_MISSES)
+    assert all(x[5] == "width" for x in MEASURED if x[:4] in ACCEPTED_FAILURES)
 
 
-def test_each_failure_is_rejected_by_its_own_limit(fp, dev):
-    for x in MEASURED:
-        if x[4] == "failed":
-            r = margins(fp, dev, *x[:4])
-            key = "area_margin" if x[5] == "area" else "width_margin"
-            assert r[key] < 1, x
+def test_headroom_is_the_fit(fp, dev):
+    bad = min(use(fp, dev, x) for x in MEASURED if x[5] == "area")
+    ok = max(u for u in (use(fp, dev, x) for x in MEASURED if x[4] == "routed")
+             if u < bad - 1e-12)
+    assert abs(ok - fp.milp.PIN_HEADROOM) < 1e-12
 
 
-def test_constants_are_the_fit(fp, dev):
-    for k, lim in ((0, "area"), (1, "width")):
-        bad = min(densities(fp, dev, x)[k] for x in MEASURED
-                  if x[4] == "failed" and x[5] == lim)
-        ok = max(d for d in (densities(fp, dev, x)[k] for x in MEASURED
-                             if x[4] == "routed") if d < bad - 1e-9)
-        const = fp.milp.PIN_AREA_DENSITY if k == 0 else fp.milp.PIN_CUT_DENSITY
-        assert abs(ok - const) < 1e-9 * const, lim
+def test_exact_bound_at_headroom_one(fp, dev):
+    """At pin_headroom 1 the constraint is the exact site count: a region
+    with exactly one pin per routing node is feasible, one more pin is not."""
+    keep = set((c, 1) for c in range(40, 44)) | {(25, 0), (22, 0)}
+    forbid = [(c, r) for c in dev.xs for r in range(dev.nrows) if (c, r) not in keep]
+    sites = fp.milp.pin_capacity(dev, list(range(40, 44)), [1], 1)["sites"]
+    assert sites == 4 * 50 * dev.raw["routing"]["wires_per_tile"]
+    d = {"lut": 0, "ff": 0, "bram": 0, "dsp": 0, "slices": 100}
+    fp.milp.solve(dev, {"rp0": dict(d, pins=sites)}, objective="wr",
+                  forbid_cells=forbid, pin_headroom=1.0)
+    with pytest.raises(RuntimeError):
+        fp.milp.solve(dev, {"rp0": dict(d, pins=sites + 1)}, objective="wr",
+                      forbid_cells=forbid, pin_headroom=1.0)
 
 
 def test_every_design_has_predicted_regions(fp, dev):
@@ -142,49 +149,9 @@ def test_every_design_has_predicted_regions(fp, dev):
         assert any(x[0] == design and x[6] == "pred" for x in MEASURED)
 
 
-def test_solver_matches_pin_capacity_across_a_special(fp, dev):
-    """The packed-band case is exact where pin columns and routing columns
-    differ: a region over x=33 (column 32 takes no pins but routes) is
-    feasible at its own width density and not below it."""
-    keep = set((c, r) for c in range(28, 36) for r in range(3)) | {(25, 0), (22, 0)}
-    forbid = [(c, r) for c in dev.xs for r in range(dev.nrows) if (c, r) not in keep]
-    r = fp.milp.pin_capacity(dev, list(range(28, 36)), [0, 1, 2], GA_PINS, GA_PASS)
-    dens = fp.milp.PIN_CUT_DENSITY / r["width_margin"]
-    d = {"rp0": {"lut": 0, "ff": 0, "bram": 0, "dsp": 0, "slices": 100,
-                 "pins": GA_PINS, "passthrough": GA_PASS}}
-    fp.milp.solve(dev, d, objective="wr", forbid_cells=forbid,
-                  pin_cut_density=1.001 * dens)
-    with pytest.raises(RuntimeError):
-        fp.milp.solve(dev, d, objective="wr", forbid_cells=forbid,
-                      pin_cut_density=0.999 * dens)
-
-
-def test_height_limit(fp, dev):
-    """The horizontal counterpart: a 1-row region at its area capacity with
-    the worst-case pass-through is bound by it once it is wider than
-    sqrt(WIDTH x 124 / (8 x AREA)) routing columns (52 on xc7z020)."""
-    m = fp.milp
-    rt = dev.raw["routing"]
-    wmax = (m.PIN_CUT_DENSITY * rt["horizontal_crossings_per_tile"]
-            / (rt["pploc_wires_per_tile"] / 2 * m.PIN_AREA_DENSITY)) ** 0.5
-    for n, ok in ((int(wmax) - 3, True), (int(wmax) + 3, False)):
-        cols = []
-        for c in dev.xs:
-            cols.append(c)
-            if sum(dev.col_type(x) in rt["module_routing_types"]
-                   for x in cols) == n:
-                break
-        cap = m.pin_capacity(dev, cols, [0], 1)["area_capacity"]
-        r = m.pin_capacity(dev, cols, [0], int(cap))
-        assert r["cols"] == n and (r["height_margin"] >= 1) == ok
-
-
-def fits(fp, dev, cols, rows, pins=GA_PINS, t=GA_PASS):
-    return accepted(fp.milp.pin_capacity(dev, list(cols), rows, pins, t))
-
-
 def test_device_routing_facts(dev):
     rt = dev.raw["routing"]
+    assert rt["wires_per_tile"] == 99                # routing nodes: the pin sites
     assert rt["pploc_wires_per_tile"] == 16          # EL1/ER1/WL1/WR1 x 4
     assert rt["vertical_crossings_per_tile"] == 196
     assert rt["int_tiles_per_cell"] == 50
@@ -196,23 +163,9 @@ def test_special_column_interconnect_does_not_count(fp, dev):
     # static, so the region has 5 module-routable columns, not 6
     r = fp.milp.pin_capacity(dev, list(range(30, 36)), [1], GA_PINS)
     assert (r["tiles"], r["cols"]) == (250, 5)
-    # ... and column 32, which Vivado prohibits while a region covers x=33
-    # (special_splits), takes no pins
-    assert r["pploc_cols"] == 4
     # a BRAM and a DSP column's interconnect do count
     r = fp.milp.pin_capacity(dev, list(range(56, 62)), [0], GA_PINS)
-    assert (r["tiles"], r["cols"], r["pploc_cols"]) == (300, 6, 6)
-
-
-def test_band(fp, dev):
-    # the pins spread over the region's height, or over the rows their
-    # pin columns fill at PIN_PACKING per tile when that is shorter
-    pack = lambda ncols: GA_PINS / (fp.milp.PIN_PACKING * ncols)
-    band = lambda cols, rows: fp.milp.pin_capacity(dev, list(cols), rows,
-                                                   GA_PINS)["band"]
-    assert band(range(30, 36), [1, 2]) == 100              # 2 rows < pack(4)
-    assert abs(band(range(30, 36), [0, 1, 2]) - pack(4)) < 1e-9
-    assert abs(band(range(38, 44), [0, 1, 2]) - pack(6)) < 1e-9
+    assert (r["tiles"], r["cols"]) == (300, 6)
 
 
 def demands(**extra):
@@ -232,38 +185,27 @@ def test_zero_pins_is_no_pins(fp, dev):
     assert strip(a) == strip(b)
 
 
-def test_without_pins_wr_picks_a_region_too_narrow(fp, dev):
-    """GA's demand without pins: the wasted-resources optimum is the 8 slice
-    column x 3 row region that failed routing on the real part."""
-    res = fp.milp.solve(dev, demands(), objective="wr")
-    assert any(not fits(fp, dev, r["cols"], r["rows"])
-               for r in res["regions"].values())
-
-
 @pytest.mark.parametrize("objective", ["wr", "frames"])
 def test_pins_limits_hold(fp, dev, objective):
-    res = fp.milp.solve(dev, demands(pins=GA_PINS, passthrough=GA_PASS), objective=objective)
+    res = fp.milp.solve(dev, demands(pins=GA_PINS), objective=objective)
     for r in res["regions"].values():
         assert r["pins"] == GA_PINS
-        assert r["pin_area_margin"] >= 1 - 1e-9
-        assert r["pin_width_margin"] >= 1 - 1e-9
-        assert fits(fp, dev, r["cols"], r["rows"])
-        assert r["pin_cols"] >= 5
+        assert r["pin_margin"] >= 1 - 1e-9
+        assert accepted(fp.milp.pin_capacity(dev, r["cols"], r["rows"], GA_PINS))
 
 
-def test_densities_are_parameters(fp, dev):
-    res = fp.milp.solve(dev, demands(pins=GA_PINS, passthrough=GA_PASS), objective="wr",
-                        pin_cut_density=0.5 * fp.milp.PIN_CUT_DENSITY)
-    half = 0.5 * fp.milp.PIN_CUT_DENSITY
+def test_headroom_is_a_parameter(fp, dev):
+    """A lower pin headroom needs more sites: the default optimum's regions
+    do not all survive half the headroom, and the half-headroom solve's do."""
+    half = 0.5 * fp.milp.PIN_HEADROOM
+    res = fp.milp.solve(dev, demands(pins=GA_PINS), objective="wr",
+                        pin_headroom=half)
     for r in res["regions"].values():
-        assert r["pin_width_margin"] >= 1 - 1e-9
         assert fp.milp.pin_capacity(dev, r["cols"], r["rows"], GA_PINS,
-                                    pin_cut_density=half)["width_margin"] \
-            >= 1 - 1e-9
-    # the default-density optimum does not survive the halved density
-    base = fp.milp.solve(dev, demands(pins=GA_PINS, passthrough=GA_PASS), objective="wr")
+                                    pin_headroom=half)["margin"] >= 1 - 1e-9
+    base = fp.milp.solve(dev, demands(pins=GA_PINS), objective="wr")
     assert any(fp.milp.pin_capacity(dev, r["cols"], r["rows"], GA_PINS,
-                                    pin_cut_density=half)["width_margin"] < 1
+                                    pin_headroom=half)["margin"] < 1
                for r in base["regions"].values())
 
 
@@ -278,7 +220,7 @@ def test_pins_need_the_routing_section(fp, dev):
     bare = fp.device.Device(raw)
     fp.milp.solve(bare, demands(), objective="wr")          # fine without pins
     with pytest.raises(ValueError):
-        fp.milp.solve(bare, demands(pins=GA_PINS, passthrough=GA_PASS), objective="wr")
+        fp.milp.solve(bare, demands(pins=GA_PINS), objective="wr")
 
 
 def test_csv_pins_column(fp, tmp_path):
