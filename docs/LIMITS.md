@@ -150,25 +150,33 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
    overhead) must be re-measured before the `frames` objective is trusted
    on another device family — see `tools/build_device_model.py`.
 
-10. **Partition-pin routability is an empirical bound, from one part and
-    one Vivado version.**  The two fitted densities (README "Partition
-    pins") come from builds on xc7z020 with Vivado 2019.1, of four RFP
-    designs.  Every port bit of those modules is registered, and their
-    interfaces are wide register-file slots.  A design with a different
-    interface style is outside the measured set.  What the model does not
-    cover:
-    * **Location.**  The same shape at the same density routes in one
-      place and fails in another, depending on where the static design
-      puts the pins.  The constants sit below the least-dense measured
-      failure.  Above them, failures were measured from 1.17 x the width
-      constant.
-    * **The static side.**  Static nets that cross the region, and the
-      static design's own congestion, are not modeled.
-    * **The height limit** is modeled by symmetry and was never observed:
-      no measured region came near it.
-    * **Pin plans** are not counted on by the solver.  Pairing relieved
-      width failures (5 of 9 modules) without curing them all, and the
-      relief was not measured as a capacity.
-    * **The pass-through input** is the caller's.  When it is absent the
-      worst case is assumed; a value lower than the truth makes the width
-      limit optimistic.
+10. **Partition pins: one exact resource, one calibration, and an
+    unmodeled mechanism.**  The pin-site constraint (README "Partition
+    pins") is exact at `--pin-headroom 1`: a region violating it cannot
+    hold its pins.  The default headroom is a calibration on 42 regions of
+    four RFP designs, built on xc7z020 with Vivado 2019.1.  Every port bit
+    of those modules is registered, and their interfaces are wide
+    register-file slots.  What is not modeled:
+    * **Pass-through wiring between pins Vivado places apart** (the
+      "width" mechanism).  A module that passes a slot's bits from its
+      in-pins to its out-pins must wire between them, across the
+      region's horizontal cut lines.  Vivado's static placer puts a
+      pair's pins a median 5-48 rows apart, and in narrow regions the
+      vertical wires of the middle rows run out.  No lower bound on that
+      wiring follows from the floorplan: a placement that co-locates each
+      pair needs none.  So it depends on Vivado's placer, and the solver
+      does not model it.  At the default headroom, 8 of the 38 accepted
+      measured regions failed this way: GA's 4-column, 3-row regions in
+      all three placements, and 2-row regions in 3 of 10.  The remedy
+      that worked for most modules is a pin plan with the pairs
+      co-located (README "Pin placement"); it makes the paired cut demand
+      exactly 0.  Computed and memory bits still wire across the region.
+    * **Location.**  The same shape routes in one place and fails in
+      another, depending on where the static design puts the pins.
+    * **The region boundary and the static side.**  Static nets that
+      cross the region and the static design's own congestion are not
+      modeled.  The boundary's own capacity was at least 8 x the pins of
+      every measured region.
+    * **The headroom outside the measured set:** another part, another
+      Vivado version, or a different interface style may need another
+      value.
