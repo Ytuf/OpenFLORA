@@ -167,7 +167,9 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
       pair needs none.  So it depends on Vivado's placer, and the solver
       does not model it.  At the default headroom, 8 of the 38 accepted
       measured regions failed this way: GA's 4-column, 3-row regions in
-      all three placements, and 2-row regions in 3 of 10.  The remedy
+      all three placements, its 6-column, 2-row regions in 3 of 10, a
+      5-column, 3-row GA region, and one of sobel's two 4-column, 3-row
+      regions.  The remedy
       that worked for most modules is a pin plan with the pairs
       co-located (README "Pin placement"); it makes the paired cut demand
       exactly 0.  Computed and memory bits still wire across the region.
