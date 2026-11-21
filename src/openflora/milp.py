@@ -129,9 +129,9 @@ DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins", "passthrough")
 # the pins (four designs; tests/test_pins.py re-derives them): the densest
 # region that routed every module, below the least-dense failure of that
 # limit's mechanism.  No measured failure is accepted.
-# 0.2760: LeNet b3000's 1,325 pins on a 6-column, 1-row region's 300 tiles
-# x 16 (least-dense area failure: GA b666, 0.399).
-PIN_AREA_DENSITY = 1325 / (16 * 300)
+# 0.2494: GA b666's 1,596 pins on an 8-column, 1-row region's 400 tiles x 16
+# (least-dense area failure: GA b445, 0.256, one module of 46).
+PIN_AREA_DENSITY = 1596 / (16 * 400)
 # 43.32: GA b666's 648 pass-through bits x their 91.7-row band (1,596 pins
 # packed on 6 pin columns) on a 7-column, 3-row region's 7 x 196 crossings
 # (least-dense width failure: GA b666, 50.54).

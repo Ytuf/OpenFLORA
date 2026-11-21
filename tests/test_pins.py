@@ -59,6 +59,16 @@ MEASURED = [
     ('sobel_b200', 56, 65, [1], 'routed', '', 'pred'),   # So2 rp1 (held out: ROUTES)
     ('ga_b666', 36, 43, [1], 'routed', '', 'pred'),   # E3v rp0 (held out: ROUTES at area 1.11; E3 without its plan)
     ('ga_b666', 56, 63, [1], 'routed', '', 'pred'),   # E3v rp1 (held out)
+    ('ga_b445', 28, 37, [1, 2], 'routed', '', 'pred'),   # G2 rp0 (held out: ROUTES at width 1.07)
+    ('ga_b445', 52, 61, [0], 'failed', 'area', 'pred'),   # G2 rp1 (held out: ROUTES at area 1.08; rm_2 of 46 failed, 2 overlaps near pins)
+    ('ga_b666', 38, 43, [0, 1], 'failed', 'width', 'pred'),   # S6a rp0 (rm_21, 19, 27, 13 of the 14 hardest; north-going)
+    ('ga_b666', 58, 63, [1, 2], 'routed', '', 'pred'),   # S6a rp1 (14 hardest modules)
+    ('ga_b666', 20, 25, [1, 2], 'routed', '', 'pred'),   # S6b rp0 (14 hardest modules)
+    ('ga_b666', 66, 71, [1, 2], 'routed', '', 'pred'),   # S6b rp1 (14 hardest modules)
+    ('ga_b666', 28, 35, [0, 1], 'routed', '', 'pred'),   # S7a rp0 (held out at the width constant; 14 hardest modules)
+    ('ga_b666', 58, 63, [0, 1], 'routed', '', 'pred'),   # S7a rp1 (14 hardest modules)
+    ('ga_b666', 30, 37, [1, 2], 'routed', '', 'pred'),   # S7b rp0 (held out at the width constant; 14 hardest modules)
+    ('ga_b666', 60, 65, [1, 2], 'routed', '', 'pred'),   # S7b rp1 (14 hardest modules)
 ]
 # routed, and rejected by the calibrated constants (a conservative miss)
 SAFE_MISSES = [
@@ -69,6 +79,12 @@ SAFE_MISSES = [
     ('ga_b445', 38, 43, [1, 2]),
     ('ga_b445', 28, 35, [0, 1]),
     ('sobel_b200', 22, 25, [0, 1, 2]),
+    ('lenet_b3000', 58, 63, [1]),
+    ('ga_b666', 58, 63, [1, 2]),
+    ('ga_b666', 20, 25, [1, 2]),
+    ('ga_b666', 66, 71, [1, 2]),
+    ('ga_b666', 58, 63, [0, 1]),
+    ('ga_b666', 60, 65, [1, 2]),
 ]
 
 
@@ -143,7 +159,7 @@ def test_solver_matches_pin_capacity_across_a_special(fp, dev):
 def test_height_limit(fp, dev):
     """The horizontal counterpart: a 1-row region at its area capacity with
     the worst-case pass-through is bound by it once it is wider than
-    sqrt(WIDTH x 124 / (8 x AREA)) routing columns (49 on xc7z020)."""
+    sqrt(WIDTH x 124 / (8 x AREA)) routing columns (52 on xc7z020)."""
     m = fp.milp
     rt = dev.raw["routing"]
     wmax = (m.PIN_CUT_DENSITY * rt["horizontal_crossings_per_tile"]
