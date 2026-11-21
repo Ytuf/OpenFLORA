@@ -289,7 +289,7 @@ floorplanner input can supply it.  A pin plan fixes it instead (below).
 ### Calibration and the guarantee
 
 The two densities come from one rule, applied jointly to every region
-built with Vivado placing the pins: 40 regions of four RFP designs
+built with Vivado placing the pins: 42 regions of four RFP designs
 (xc7z020, Vivado 2019.1).  Each is the density of the densest region
 that routed every module, below the least-dense failure of that limit's
 mechanism:
@@ -325,12 +325,12 @@ or fails depending on where the static design puts the pins:
 | GA b666 | 20.7 | 0.48 | 0.249 | 2 | 2 | 0 |
 | GA b666 | 33.1 | 0.76 | 0.399 | 2 | 0 | 2 (area) |
 | GA b666 | 43.3 | 1.00 | 0.095/0.142 | 3 | 3 | 0 |
-| GA b666 | 50.5 | 1.17 | 0.111/0.166 | 10 | 8 | 2 (width) |
+| GA b666 | 50.5 | 1.17 | 0.111/0.166 | 12 | 9 | 3 (width) |
 | sobel b200 | 94.8 | 2.19 | 0.153 | 2 | 1 | 1 (width) |
 | GA b666 | 113.7 | 2.62 | 0.166 | 3 | 0 | 3 (width) |
 
 Failures were measured from 1.03 x the area constant and 1.17 x the
-width constant.  At 1.17 x the width constant, 2 of 10
+width constant.  At 1.17 x the width constant, 3 of 12
 placements failed.  The constants sit below every measured failure.  A
 further derate would be a number with no measurement behind it.
 
@@ -338,11 +338,11 @@ Per design (the full per-region table is in `tests/test_pins.py`):
 
 | design | pins | pass-through | regions | accepted (all routed) | of them predicted before the build | failures (all rejected) | routed but rejected |
 |---|---|---|---|---|---|---|---|
-| GA b666 | 1596 | 648 | 28 | 11 | 6 | 8 | 9 |
+| GA b666 | 1596 | 648 | 30 | 11 | 6 | 9 | 10 |
 | GA b445 | 2050 | 809 | 4 | 1 | 1 | 1 | 2 |
 | sobel b200 | 1472 | 586 | 4 | 2 | 2 | 1 | 1 |
 | LeNet b3000 | 1325 | 133 | 4 | 3 | 3 | 0 | 1 |
-| all | | | 40 | 17 | 12 | 10 | 13 |
+| all | | | 42 | 17 | 12 | 11 | 14 |
 
 ### Pin placement
 

@@ -69,6 +69,8 @@ MEASURED = [
     ('ga_b666', 58, 63, [0, 1], 'routed', '', 'pred'),   # S7a rp1 (14 hardest modules)
     ('ga_b666', 30, 37, [1, 2], 'routed', '', 'pred'),   # S7b rp0 (held out at the width constant; 14 hardest modules)
     ('ga_b666', 60, 65, [1, 2], 'routed', '', 'pred'),   # S7b rp1 (14 hardest modules)
+    ('ga_b666', 24, 29, [1, 2], 'failed', 'width', 'pred'),   # S6c rp0 (rm_13, 21, 19, 27 of the 14 hardest; north-going)
+    ('ga_b666', 56, 61, [0, 1], 'routed', '', 'pred'),   # S6c rp1 (14 hardest modules)
 ]
 # routed, and rejected by the calibrated constants (a conservative miss)
 SAFE_MISSES = [
@@ -85,6 +87,7 @@ SAFE_MISSES = [
     ('ga_b666', 66, 71, [1, 2]),
     ('ga_b666', 58, 63, [0, 1]),
     ('ga_b666', 60, 65, [1, 2]),
+    ('ga_b666', 56, 61, [0, 1]),
 ]
 
 

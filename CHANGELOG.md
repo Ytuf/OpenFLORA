@@ -11,7 +11,7 @@ device model for other 7-series parts.
   its ports.  Adds two measured routability limits on the region's
   module-routable interconnect -- area (pin sites) and width (vertical
   wiring between pins the static design placed apart) -- plus their
-  horizontal counterpart.  The densities are fitted jointly on 40 regions
+  horizontal counterpart.  The densities are fitted jointly on 42 regions
   of four designs built on xc7z020; no measured failure is accepted.
   README "Partition pins".
 - **`passthrough` demand** (CSV column 8): the most output bits any of the
