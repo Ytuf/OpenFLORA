@@ -171,35 +171,69 @@ def partpin_plan(device, cols, rows, pins, pairs=(), per_tile=4, trim=1):
 
 
 def partpin_cut_demand(plan, pairs):
-    """The cut demand a fixed pin plan implies: for every horizontal cut line
-    between two interconnect rows and every vertical one between two
-    interconnect columns, how many ``pairs`` (in_pin, out_pin) have their pins
-    on opposite sides.  Each such pair's module route must cross that line,
-    on its own wire (the in-pin is its own net), so this is a lower bound on
-    the wires the module needs across the cut -- exact from the plan, not
-    modeled.  Returns {"horizontal": most over horizontal cuts, "vertical":
-    most over vertical cuts}.  A plan from ``partpin_plan`` puts each pair in
-    one tile, so both are 0."""
+    """The cut demand a fixed pin plan implies, by direction.  ``pairs`` are
+    (source pin, destination pin) couples whose module route runs from the
+    first to the second -- a slot's in-pin to its out-pin.  Interconnect
+    wires are one-way, so a pair whose destination lies north of a
+    horizontal cut line and whose source lies south of it needs a wire that
+    crosses the line going north (and so on for the other directions); each
+    pair's route is its own net, so the counts are lower bounds on the
+    wires the module needs, exact from the plan.  Returns
+    {"north", "south", "east", "west": the most pairs forced across one cut
+    line in that direction, "horizontal": {y: (north, south)} for every
+    horizontal cut line between rows y and y + 1 that any pair crosses,
+    "vertical": {x: (east, west)} likewise}.  A plan from ``partpin_plan``
+    puts each pair in one tile, so every count is 0."""
     loc = dict(plan)
 
     def xy(tile):
         x, y = tile.split("_X")[1].split("Y")
         return int(x), int(y)
 
-    def most(spans):
-        events = []
-        for lo, hi in spans:
-            if hi > lo:
-                events += [(lo, 1), (hi, -1)]
-        best = cur = 0
-        for _pos, step in sorted(events):
-            cur += step
-            best = max(best, cur)
-        return best
+    hor, ver = {}, {}
+    for a, b in pairs:
+        if a not in loc or b not in loc:
+            continue
+        (xa, ya), (xb, yb) = xy(loc[a]), xy(loc[b])
+        for y in range(min(ya, yb), max(ya, yb)):
+            n, s_ = hor.get(y, (0, 0))
+            hor[y] = (n + 1, s_) if yb > ya else (n, s_ + 1)
+        for x in range(min(xa, xb), max(xa, xb)):
+            e, w = ver.get(x, (0, 0))
+            ver[x] = (e + 1, w) if xb > xa else (e, w + 1)
+    return {"north": max([v[0] for v in hor.values()] or [0]),
+            "south": max([v[1] for v in hor.values()] or [0]),
+            "east": max([v[0] for v in ver.values()] or [0]),
+            "west": max([v[1] for v in ver.values()] or [0]),
+            "horizontal": hor, "vertical": ver}
 
-    split = [(xy(loc[a]), xy(loc[b])) for a, b in pairs if a in loc and b in loc]
-    return {"horizontal": most([(min(p[1], q[1]), max(p[1], q[1])) for p, q in split]),
-            "vertical": most([(min(p[0], q[0]), max(p[0], q[0])) for p, q in split])}
+
+def partpin_cut_check(device, plan, pairs, cols, rows):
+    """Check a fixed pin plan's cut demand against the region's one-way
+    capacity (device model ``routing.one_way_crossings_per_tile``).  At a
+    horizontal cut line of a region with c module-routable interconnect
+    columns, N pairs forced north and S south fit only if
+    max(N - north*c, 0) + max(S - south*c, 0) <= vertical_either*c: the
+    one-way wires of each direction, plus the long lines, which either
+    direction can use but each only once.  Vertical cut lines likewise with
+    east / west / horizontal_either per interconnect row.  Returns the
+    violations, [(kind, line, forward, backward, capacity text)]; [] when the
+    plan's forced demand fits."""
+    rt = device.raw["routing"]
+    ow = rt["one_way_crossings_per_tile"]
+    types = rt["module_routing_types"]
+    c = sum(1 for x in cols if device.col_type(x) in types)
+    h = rt["int_tiles_per_cell"] * len(rows)
+    d = partpin_cut_demand(plan, pairs)
+    bad = []
+    for kind, table, k, fwd, bwd, either in (
+            ("horizontal", d["horizontal"], c, ow["north"], ow["south"], ow["vertical_either"]),
+            ("vertical", d["vertical"], h, ow["east"], ow["west"], ow["horizontal_either"])):
+        for line, (f, b) in sorted(table.items()):
+            if max(f - fwd * k, 0) + max(b - bwd * k, 0) > either * k:
+                bad.append((kind, line, f, b, "%d + %d one-way, %d either way"
+                            % (fwd * k, bwd * k, either * k)))
+    return bad
 
 
 def partpin_xdc(cell, plan):

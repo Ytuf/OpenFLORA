@@ -177,8 +177,8 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
       another, depending on where the static design puts the pins.
     * **The region boundary and the static side.**  Static nets that
       cross the region and the static design's own congestion are not
-      modeled.  The boundary's own capacity was at least 8 x the pins of
-      every measured region.
+      modeled.  The wires entering the boundary numbered 3.5 x or more the
+      pins of every measured region.
     * **The headroom outside the measured set:** another part, another
       Vivado version, or a different interface style may need another
       value.

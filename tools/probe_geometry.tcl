@@ -108,6 +108,24 @@ foreach cr [get_clock_regions] {
       if {[llength $xs] == 0} { continue }
       set xs [lsort -integer $xs]; set yv [lsort -integer $yv]
       puts $fp "INTW $t [lindex [split $nm /] 1] [get_property COST_CODE_NAME $n] [expr {[lindex $xs end] - [lindex $xs 0]}] [expr {[lindex $yv end] - [lindex $yv 0]}]"
+      # one-way spans: how far the node reaches east, west, north and south of
+      # the tile it is named in (its driver end for a one-way wire), from the
+      # tile names (X grows eastward, Y northward).
+      #    INTD <tile> <wire> <cost class> <east> <west> <north> <south>
+      proc _nxy {tile} {
+        set xy [lindex [split $tile X] end]
+        return [list [lindex [split $xy Y] 0] [lindex [split $xy Y] 1]]
+      }
+      lassign [_nxy $t] tx ty
+      set e 0; set w 0; set no 0; set so 0
+      foreach tt [get_tiles -quiet -of_objects $n -filter {TYPE == INT_L || TYPE == INT_R}] {
+        lassign [_nxy $tt] ux uy
+        if {$ux - $tx > $e} { set e [expr {$ux - $tx}] }
+        if {$tx - $ux > $w} { set w [expr {$tx - $ux}] }
+        if {$uy - $ty > $no} { set no [expr {$uy - $ty}] }
+        if {$ty - $uy > $so} { set so [expr {$ty - $uy}] }
+      }
+      puts $fp "INTD $t [lindex [split $nm /] 1] [get_property COST_CODE_NAME $n] $e $w $no $so"
     }
   }
 }

@@ -230,17 +230,28 @@ wires Vivado prefers.
 
 ### Cuts: what can be derived, and what cannot
 
-The device model also records the exact routing capacity of a cut line:
-196 vertical wire crossings per interconnect column across a horizontal
-cut, and 124 horizontal crossings per interconnect row across a vertical
-cut (the summed spans of a tile's routing wires).  A cut constraint also
+The device model also records the exact routing capacity of a cut line,
+by direction, since 7-series wires are one-way
+(`routing.one_way_crossings_per_tile`, from the probe's per-node spans).
+On xc7z020:
+* a horizontal cut line is crossed, per interconnect column, by 83 wires
+  going north, 83 going south and 30 long-line crossings usable either
+  way;
+* a vertical cut line is crossed, per interconnect row, by 56 east, 56
+  west and 12 either way.
+
+So N nets forced north and S south across a horizontal line of c columns
+fit only if max(N - 83c, 0) + max(S - 83c, 0) <= 30c, that is N, S <=
+113c and N + S <= 196c.  The 196 sum alone overstates what either
+direction can carry.  A cut constraint also
 needs a demand that provably crosses the cut:
 
 * **The region's boundary.**  Every output pin's static route, and every
   static net into the region, must cross it.  With only the pin count
   given, no useful lower bound follows: all input pins could share one
-  static net.  OpenFLORA therefore adds no boundary constraint.  For
-  every measured region the boundary carried 8 x its pin count or more.
+  static net.  OpenFLORA therefore adds no boundary constraint.  The
+  wires that cross the boundary going inward numbered 3.5 x or more the
+  pins of every measured region.
 * **Interior cuts, Vivado placing the pins.**  There is no lower bound.
   A placement that puts each slot's in-pin and out-pin in one tile
   needs no pass-through wiring across any interior cut.  The static
@@ -248,11 +259,12 @@ needs a demand that provably crosses the cut:
   is the second failure mechanism below.  It depends on Vivado's placer,
   not on anything the floorplanner controls, so it is **not modeled**
   (docs/LIMITS.md).
-* **Interior cuts, with a fixed pin plan.**  The demand is exact:
-  `emit.partpin_cut_demand(plan, pairs)` counts the pairs whose pins
-  lie on opposite sides of each cut.  That many module routes must
-  cross it on distinct wires.  OpenFLORA's own plans put each pair in
-  one tile, so the demand is 0 (see "Pin placement").
+* **Interior cuts, with a fixed pin plan.**  The demand is exact, by
+  direction.  `emit.partpin_cut_demand(plan, pairs)` counts, for each
+  cut line, the (source, destination) pairs forced across it in each
+  direction.  `emit.partpin_cut_check` tests those counts against the
+  one-way capacity above.  OpenFLORA's own plans put each pair in one
+  tile, so the demand is 0 (see "Pin placement").
 
 ### The calibration: `--pin-headroom`
 

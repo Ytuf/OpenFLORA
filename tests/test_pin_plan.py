@@ -70,18 +70,39 @@ def test_pins_file(fp, tmp_path):
 
 
 def test_plan_cut_demand(fp, dev):
-    """A fixed plan makes the cut demand exact: the pairs whose pins sit on
-    opposite sides of a cut line.  partpin_plan puts each pair in one tile,
-    so it is 0; splitting one pair across rows makes it 1."""
+    """A fixed plan makes the cut demand exact, by direction: the pairs
+    whose source and destination pins sit on opposite sides of a cut line.
+    partpin_plan puts each pair in one tile, so it is 0; moving one pair's
+    out-pin 138 rows north of its in-pin forces one northward crossing."""
     pins, pairs = ga_pins()
     plan = fp.emit.partpin_plan(dev, list(range(52, 56)), [0, 1, 2], pins, pairs,
                                 per_tile=4)
-    assert fp.emit.partpin_cut_demand(plan, pairs) == {"horizontal": 0, "vertical": 0}
+    d = fp.emit.partpin_cut_demand(plan, pairs)
+    assert (d["north"], d["south"], d["east"], d["west"]) == (0, 0, 0, 0)
+    assert fp.emit.partpin_cut_check(dev, plan, pairs, list(range(52, 56)), [0, 1, 2]) == []
     loc = dict(plan)
-    loc[pairs[0][1]] = "INT_L_X52Y140"
     loc[pairs[0][0]] = "INT_L_X52Y2"
-    demand = fp.emit.partpin_cut_demand(list(loc.items()), pairs)
-    assert demand == {"horizontal": 1, "vertical": 0}
+    loc[pairs[0][1]] = "INT_L_X52Y140"
+    d = fp.emit.partpin_cut_demand(list(loc.items()), pairs)
+    assert (d["north"], d["south"]) == (1, 0)
+
+
+def test_plan_cut_check_is_one_way(fp, dev):
+    """Every slot pair of a 4-column region split the same way: the north
+    demand (690) exceeds the north-only wires plus every long line
+    (4 x (83 + 30) = 452) although it is below the 196-per-column sum (784)."""
+    ow = dev.raw["routing"]["one_way_crossings_per_tile"]
+    assert ow["north"] + ow["south"] + ow["vertical_either"] == \
+        dev.raw["routing"]["vertical_crossings_per_tile"]
+    pins, pairs = ga_pins()
+    plan = []
+    for k, (a, b) in enumerate(pairs):
+        x = 52 + k % 4
+        plan += [(a, "INT_%s_X%dY10" % ("L" if x % 2 == 0 else "R", x)),
+                 (b, "INT_%s_X%dY140" % ("L" if x % 2 == 0 else "R", x))]
+    bad = fp.emit.partpin_cut_check(dev, plan, pairs, list(range(52, 56)), [0, 1, 2])
+    assert bad and all(v[0] == "horizontal" and v[2] == len(pairs) for v in bad)
+    assert len(pairs) < 4 * dev.raw["routing"]["vertical_crossings_per_tile"]
 
 
 def test_plan_measurements(fp, dev):

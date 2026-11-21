@@ -93,7 +93,61 @@ def routing_facts(probe_path):
     if any(abs(t[1] - facts["vertical_crossings_per_tile"]) > 4
            for t in tiles.values()):
         raise AssertionError("vertical routing inventory not uniform")
+    one_way = one_way_facts(probe_path)
+    if one_way:
+        v = one_way["north"] + one_way["south"] + one_way["vertical_either"]
+        h = one_way["east"] + one_way["west"] + one_way["horizontal_either"]
+        if v != facts["vertical_crossings_per_tile"] or \
+                h != facts["horizontal_crossings_per_tile"]:
+            raise AssertionError("one-way crossings %d / %d do not add up to "
+                                 "%d / %d" % (v, h,
+                                              facts["vertical_crossings_per_tile"],
+                                              facts["horizontal_crossings_per_tile"]))
+        facts["one_way_crossings_per_tile"] = one_way
     return facts
+
+
+LONG_COSTS = ("HLONG", "VLONG", "VLONG12")
+
+
+def one_way_facts(probe_path):
+    """The crossings of a cut line per interconnect tile, by the direction a
+    signal can take across it (probe INTD lines: a node's reach east, west,
+    north and south of the tile it is named in, its driver end).  A one-way
+    wire crosses only in the direction it reaches; a long line, driven at
+    any of its taps, either way.  Returns {north, south, vertical_either,
+    east, west, horizontal_either} (most common over the sampled tiles), or
+    None for a probe without INTD lines."""
+    tiles = {}
+    for ln in open(probe_path):
+        if not ln.startswith("INTD "):
+            continue
+        _, tile, _wire, cost, e, w, n, s = ln.split()
+        if cost not in ROUTING_COSTS:
+            continue
+        e, w, n, s = int(e), int(w), int(n), int(s)
+        t = tiles.setdefault(tile, [0] * 6)
+        if cost in LONG_COSTS or (n and s):
+            t[2] += n + s
+        else:
+            t[0] += n
+            t[1] += s
+        if cost in LONG_COSTS or (e and w):
+            t[5] += e + w
+        else:
+            t[3] += e
+            t[4] += w
+    if not tiles:
+        return None
+
+    def mode(k):
+        counts = {}
+        for t in tiles.values():
+            counts[t[k]] = counts.get(t[k], 0) + 1
+        return max(sorted(counts), key=lambda v: counts[v])
+
+    return {"north": mode(0), "south": mode(1), "vertical_either": mode(2),
+            "east": mode(3), "west": mode(4), "horizontal_either": mode(5)}
 
 
 def name_xy(name):

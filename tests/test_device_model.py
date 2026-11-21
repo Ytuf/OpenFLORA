@@ -33,7 +33,10 @@ def synthetic_probe():
     for i in range(4):
         for w in ("EL1BEG", "ER1BEG", "WL1BEG", "WR1BEG"):
             ln.append("INTW INT_L_X2Y50 %s%d SINGLE 1 0" % (w, i))
+            east = w[0] == "E"
+            ln.append("INTD INT_L_X2Y50 %s%d SINGLE %d %d 0 0" % (w, i, east, not east))
         ln.append("INTW INT_L_X2Y50 NN6BEG%d VQUAD 0 6" % i)
+        ln.append("INTD INT_L_X2Y50 NN6BEG%d VQUAD 0 0 6 0" % i)
     return "\n".join(ln) + "\n"
 
 
@@ -58,6 +61,10 @@ def test_general_path(tmp_path):
     assert m["totals"]["slices"] == 500
     assert m["routing"]["pploc_wires_per_tile"] == 16
     assert m["routing"]["vertical_crossings_per_tile"] == 24
+    # one-way: the hexes go north only, the singles east or west
+    assert m["routing"]["one_way_crossings_per_tile"] == {
+        "north": 24, "south": 0, "vertical_either": 0,
+        "east": 8, "west": 8, "horizontal_either": 0}
 
 
 def test_specials_log(tmp_path):
@@ -106,3 +113,13 @@ def test_special_split_costs_capacity(fp, dev):
         fp.milp.solve(dev, {"rp0": {"lut": 0, "ff": 0, "bram": 0, "dsp": 0,
                                     "slices": 450}},
                       objective="wr", headroom=1.0, forbid_cells=forbid)
+
+
+def test_bundled_one_way_crossings(dev):
+    """xc7z020, probed: a horizontal cut line is crossed per interconnect
+    column by 83 wires going north, 83 going south and 30 long-line
+    crossings usable either way (196 in all); a vertical one per row by 56
+    east, 56 west and 12 either way (124)."""
+    ow = dev.raw["routing"]["one_way_crossings_per_tile"]
+    assert ow == {"north": 83, "south": 83, "vertical_either": 30,
+                  "east": 56, "west": 56, "horizontal_either": 12}

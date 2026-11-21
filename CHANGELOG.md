@@ -20,11 +20,15 @@ device model for other 7-series parts.
 - **Pin plans** (`emit.partpin_plan`, `--pin-plan N --pins-file F`): the
   XDC can place each region's partition pins (HD.PARTPIN_LOCS), each
   in/out pair in one interconnect tile, at most N a tile.
-  `emit.partpin_cut_demand` gives a fixed plan's exact cut demand (0 for
-  these plans).  No solver constraint changes with a plan.
+  `emit.partpin_cut_demand` gives a fixed plan's exact cut demand by
+  direction (0 for these plans), and `emit.partpin_cut_check` checks it
+  against the one-way capacity.  No solver constraint changes with a plan.
 - **Device model `routing` section** (probe section 5): routing wires,
   vertical and horizontal wire crossings and partition-pin wires per
-  interconnect tile, interconnect tiles per cell, interconnect tile types.
+  interconnect tile, interconnect tiles per cell, interconnect tile types,
+  and the one-way crossings of a cut line (`one_way_crossings_per_tile`:
+  north / south / either way, east / west / either way; xc7z020 83 / 83 /
+  30 and 56 / 56 / 12).
 - **`special_splits`** (`tools/probe_specials.py`, design-free): the CLB
   column whose placement Vivado prohibits while a region covers a given
   special column.

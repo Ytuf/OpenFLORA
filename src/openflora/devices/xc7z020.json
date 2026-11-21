@@ -831,6 +831,14 @@
   "horizontal_crossings_per_tile": 124,
   "pploc_wires_per_tile": 16,
   "sampled_tiles": 174,
+  "one_way_crossings_per_tile": {
+   "north": 83,
+   "south": 83,
+   "vertical_either": 30,
+   "east": 56,
+   "west": 56,
+   "horizontal_either": 12
+  },
   "int_tiles_per_cell": 50,
   "module_routing_types": [
    "CLB",
