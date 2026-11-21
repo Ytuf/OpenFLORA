@@ -96,11 +96,16 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
    in both: 100 SLICEL sites (X48, X49) per covered row, which the
    slice model still counts as region capacity.  Module routing did use
    `INT_L_X32` (2,923 nodes in one routed module) and never `INT_R_X33`.
-   The slice model is unchanged (correcting it changes every solve that
-   covers x=33); the partition-pin model (README "Partition pins")
-   already leaves a special column's interconnect out.  Whether x=50
-   (paired with x=51) does the same was not checked: the one recent GA
-   build that covered it (22 x 1) left no implementation log.
+   The slice model now leaves those sites out (0.2.0): the device
+   model's `special_splits` names, per special column, the CLB columns a
+   region covering it loses, and the capacity and the reported slice
+   count drop them.  `tools/probe_specials.py` measures this without a
+   design (a one-cell design in a pair-aligned pblock around each
+   special column); on xc7z020 it reproduces the GA measurement for x=33
+   and shows that covering x=50 costs nothing.  Solves whose regions
+   cover x=33 can change from 0.1.0; the recorded optima of the test
+   suite do not.  The partition-pin model (README "Partition pins")
+   leaves the lost column out of the pin columns too.
 
 5. **Vertical stacking and upper-row rectangles: flow-proven in round 3,
    board-proven in round 4.**  Every silicon pblock behind the original
@@ -144,3 +149,26 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
    table (36/28/28/30, 128 content frames, 404 bytes/frame, preamble and
    overhead) must be re-measured before the `frames` objective is trusted
    on another device family — see `tools/build_device_model.py`.
+
+10. **Partition-pin routability is an empirical bound, from one part and
+    one Vivado version.**  The two fitted densities (README "Partition
+    pins") come from builds on xc7z020 with Vivado 2019.1, of four RFP
+    designs.  Every port bit of those modules is registered, and their
+    interfaces are wide register-file slots.  A design with a different
+    interface style is outside the measured set.  What the model does not
+    cover:
+    * **Location.**  The same shape at the same density routes in one
+      place and fails in another, depending on where the static design
+      puts the pins.  The constants sit below the least-dense measured
+      failure.  Above them, failures were measured from 1.17 x the width
+      constant.
+    * **The static side.**  Static nets that cross the region, and the
+      static design's own congestion, are not modeled.
+    * **The height limit** is modeled by symmetry and was never observed:
+      no measured region came near it.
+    * **Pin plans** are not counted on by the solver.  Pairing relieved
+      width failures (5 of 9 modules) without curing them all, and the
+      relief was not measured as a capacity.
+    * **The pass-through input** is the caller's.  When it is absent the
+      worst case is assumed; a value lower than the truth makes the width
+      limit optimistic.

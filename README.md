@@ -56,9 +56,11 @@ units), DSP — and the optional sixth is measured occupied slices:
     rp0,2874,2026,0,12,1127
     rp1,2972,2026,0,12,1264
 
-An optional seventh column, `pins`, is the region's partition-pin
-count (the bit count of its ports); it adds the routability limits
-described under "Partition pins" below.
+Two optional columns add the routability limits described under
+"Partition pins" below: a seventh, `pins`, the region's partition-pin
+count (the bit count of its ports), and an eighth, `passthrough`, the
+most output bits any of its modules takes from an input pin (the worst
+case, ceil(pins / 2), when absent).
 
 Providing the measured `slices` column is strongly recommended.  Without
 it the solver falls back to ceil(lut/4), which assumes perfect packing.
@@ -82,6 +84,8 @@ first hardware build: +1.1 % netlist growth, plus placer packing
 limits).  `--static-bram N` reserves N RAMB18 for the static design,
 `--forbid-specials` keeps regions off the clock-spine and config
 columns, and `--cell rp0=path/to/inst` binds cells in the emitted XDC.
+`--pin-plan N --pins-file pins.csv` also writes a partition-pin plan
+into the XDC (README "Pin placement").
 There is also `openflora parse-bit partial.bit`, which prints the
 FAR/FDRI frame accounting of an existing 7-series partial bitstream.
 
@@ -170,166 +174,317 @@ before trusting it on your design.
 ## Partition pins (routability)
 
 A region that holds its logic can still fail to route.  Every bit of a
-reconfigurable partition's ports is a partition pin, and every pin is
-routed into the region.  Without a model of that, OpenFLORA returned
-floorplans that met every resource constraint and then failed in
-Vivado: "N signals failed to route due to routing congestion", then
-"[Constraints 18-1000] Routing results verification failed".  The
-optional `pins` column of the demands CSV (the region's port bits)
-adds two routability limits, built from facts measured on the real
-part:
+reconfigurable partition's ports is a partition pin, and Vivado routes
+every pin into the region.  Without a model of that, OpenFLORA returned
+floorplans that met every resource constraint and then failed in Vivado
+with "N signals failed to route due to routing congestion" and
+"[Constraints 18-1000] Routing results verification failed".
 
-    name,lut,ff,bram,dsp,slices,pins
-    rp0,446,1738,0,0,1000,1596
+The optional `pins` and `passthrough` columns of the demands CSV turn on
+three routability limits, built from facts measured on the real part:
 
-What the measurements showed (xc7z020, Vivado 2019.1, `get_pplocs` and
-the routed nodes of routed and failed checkpoints):
+    name,lut,ff,bram,dsp,slices,pins,passthrough
+    rp0,446,1738,0,0,1000,1596,648
 
-* **A partition pin is a routing node inside the region (a PPLOC).**
-  Vivado puts it on one of the 16 horizontal length-1 wires of an
-  interconnect tile.  All 19,128 PPLOCs of twelve measured regions
-  sat on those wires; only the regions too small for their pins (10
-  slice cols x 1 row) spilled 7 % onto vertical singles.
-* **The static design fixes the pins before any module is built.**  A
-  slot's in-pin and out-pin land wherever the static logic wants them,
-  sometimes tens of rows apart, and every module that passes the slot
-  through wires between them.  How far apart they land grows with the
-  height the pins spread over.  Vivado places them at about 2.9 per
-  interconnect tile, so a narrow region spreads them over its whole
-  height.
-* **A special (site-less) column's interconnect stays static.**  It has
-  no sites, so a site-range pblock cannot own it: no module route used
-  `INT_R_X33` in the two routed regions that covered it, and its paired
-  column took no pins.  BRAM and DSP columns' interconnect routes the
-  module and takes pins.
+* `pins`: the region's partition pins, the bit count of its ports (clock
+  excluded).
+* `passthrough`: the most output bits any one module of the region takes
+  from an input pin, either copied or computed.  When absent, the worst
+  case is assumed: every output bit, ceil(pins / 2).
 
-The two limits, for a region with `tiles` interconnect tiles in `cols`
-columns that route its module (CLB, BRAM and DSP columns, 50 tiles per
-clock-region row):
+### What limits a region
 
-| limit | constraint | what failed when it was exceeded |
-|---|---|---|
-| area | pins <= 0.2217 x 16 x tiles | 10 slice cols x 1 row: Vivado packed up to 20 pins into one interconnect-tile pair; most failing modules died on one node that two neighbouring pins both needed |
-| width | pins x band <= 162.9 x 196 x cols | 8 slice cols x 3 rows: 42 of the 43 overlapping nodes were north-going vertical wires in the middle rows; 10 x 3 failed where the same columns routed at 10 x 2 |
+Both mechanisms were found by locating the overlapping nodes of failed
+routes (xc7z020, Vivado 2019.1).
 
-band = min(region rows, pins / (2.9 x pin columns)): the rows the pins
-spread over.  Pin columns are `cols` less the column paired with each
-covered special column.
+1. **Pin crowding (area).**  A partition pin is a routing node inside the
+   region (a PPLOC) on one of the 16 horizontal length-1 wires of an
+   interconnect tile.  All 19,128 PPLOCs of twelve measured regions sat on
+   those wires.  Vivado aims at PARTPIN_SPREADING pins per tile (default 5).
+   In a region with too few tiles it packs up to 15, the only case that
+   spilled onto vertical singles, and the routes out of neighbouring pins
+   collide.  Every module whose route failed this way died on a single node
+   that two neighbouring pins both needed.
+2. **Pass-through wiring (width).**  The static design fixes every pin
+   before any module is built, so a slot's in-pin and out-pin can land tens
+   of rows apart.  A module that passes the slot through wires between
+   them, across the region's horizontal cut lines, which carry 196 wires per
+   interconnect column.  In a narrow region Vivado spreads the pins over
+   the whole height, and the north-going (or south-going) wires of the
+   middle rows run out: 42 of 43 overlapping nodes in one failure, 747 of
+   919 routing-wire overlaps in another.  On an 8 slice col x 3 row region,
+   every module passing 615 or more bits through failed and every one
+   passing 484 or fewer routed.
 
-16 (partition-pin wires per tile) and 196 (vertical wire crossings per
-tile column: the sum, over the tile's routing wires, of the
-interconnect rows each one spans) come from the device.
-`tools/probe_geometry.tcl` section 5 dumps every routing node of 174
-sample interconnect tiles; `tools/build_device_model.py` reduces them
-into the device model's `routing` section.  Three constants are
-measured on builds:
+### The limits
 
-* 2.9 pins per tile is Vivado's own packing, read directly from six
-  regions (2.69-2.97);
-* 0.2217 and 162.9 are each the density of the densest region that
-  routed every module of the calibration design.  The failures lie
-  above them.
+For a region with `tiles` interconnect tiles in `cols` columns that route
+its module (CLB, BRAM and DSP columns, 50 tiles per clock-region row):
+
+| limit | constraint |
+|---|---|
+| area | pins <= AREA x 16 x tiles |
+| width | passthrough x band <= WIDTH x 196 x cols |
+| height | passthrough x cols <= WIDTH x 124 x rows (in interconnect rows) |
+
+* band = min(region rows, pins / (2.9 x pin columns)) is the rows the pins
+  spread over.  Pin columns are `cols` less the CLB columns covered special
+  columns cost (below).
+* 16 (partition-pin wires per tile), 196 and 124 (vertical and horizontal
+  wire crossings per tile, measured from the spans of the tile's routing
+  wires) and 50 come from the device: `tools/probe_geometry.tcl` section 5,
+  reduced by `tools/build_device_model.py` into the device model's
+  `routing` section.  They are the same on xc7z010, xc7z020 and xc7a35t.
+* 2.9 is Vivado's own packing, read directly from six regions (2.69-2.97
+  pins per used tile).
+* AREA = 0.2494 and WIDTH = 43.32 are the fitted densities (next
+  section).
 
 The MILP takes the width limit as a disjunction with one binary per
-region: either the band is the region's height and the height form
-holds, or the pin columns reach pins / sqrt(2.9 x 162.9 x 196), which
-makes the packed band fit.
+region.  Either the band is the region's height, or the pins pack into
+a shorter band, which holds when pin columns x cols >= passthrough x
+pins / (2.9 x WIDTH x 196).  That product is linearized exactly: with
+s = cols - pin columns (an integer), the bound on pin columns is convex
+in s, and one tangent cut per integer s makes it exact at every one.
 
-The horizontal counterpart (vertical cut lines) is not modeled, because
-it cannot bind on 7-series.  A region is at least one clock-region row
-(50 tiles) high, so its vertical cut lines carry at least 50 x 124
-wires.  The pin pairs crossing them were measured at the same few
-hundred (281-426) as across horizontal cuts.
+The height limit is the width limit turned 90 degrees, with the same
+density and the pins' horizontal spread bounded by the region's width.
+No measured region came near it: the most pin pairs measured across a
+vertical cut line was 472, against capacities of thousands.  For a
+region at its area capacity with the worst-case pass-through, it binds
+beyond sqrt(WIDTH x 124 / (8 x AREA)) = 51.9 routing columns: on xc7z020,
+only a 1-row region spanning most of the part with about 10,200 pins.
+It is modeled so that such regions and larger parts stay bounded, and
+it is unvalidated.
 
-For CLB-only regions two clock-region rows high, the two limits are
-the same as "slices >= pins / 1.77" and "slice columns >= pins / 160".
-In one row the area limit binds first.  Where they differ:
+### The pass-through input
 
-* BRAM and DSP columns add routing width and pin area without adding
-  slices; a special column adds neither;
-* a region spanning three rows needs more columns unless its pins pack
-  into a shorter band.
+The width limit scales with the pass-through bits, and that is the
+input that separates the designs.  LeNet's modules take at most 133 of
+their output bits from an input pin; GA's take up to 648 (most of them
+copied slot bits).  LeNet routed every module in 4-column, 3-row
+regions where GA's heaviest modules failed.
 
-**What the constants rest on.**  The calibration design is RFP's GA at
-33 modules: 1,596 pins per region, memory registers off.  Its modules
-register every port bit, and the worst pass up to 89 % of the slot
-bits straight through, which is what loads the width limit.  A design
-whose modules pass fewer bits through is bounded conservatively.  Two
-regions of the same shape can still differ:
+To compute it for a design: for each module the region holds, count
+the output port bits whose logic cone reaches an input port bit,
+registered or not, and take the most of any module.  For RFP's modules
+it is the relayed plus the computed slot bits.  When it is not known,
+leave the column out.  The worst case is then assumed (every output
+bit, ceil(pins / 2)), which is never optimistic.
 
-* 8 x 3 failed in all three placements, by very different margins.
-  At X82..X89, rm_18 left 43 overlapping nodes and rm_19 about 2,000.
-  At X56..X63, rm_18 and rm_22 routed, and rm_19 left 9 nets in
-  conflict;
-* 10 x 1 failed in both its rows, through different nets.
+Is more input needed?  The scatter below is not explained by anything
+known before the static design is implemented.  Measured from the
+static design's own pin placements (`get_pplocs`):
 
-Where the static design puts the pins is not known before
-implementation, so the model is a shape-level bound.
+* the failed GA region (6 cols x 2 rows) had its slot pairs a mean 30
+  rows apart, with 61 pairs per column across its busiest cut;
+* a GA region of the same width density that routed had them 32 rows
+  apart, with 66-69 per column;
+* sobel's routed and failed 4 x 3 regions had 109 and 103 pairs per
+  column across their busiest cut.
 
-Measured, per region (a region "routed" when all 33 modules routed in
-it):
+The pin placement is a product of the static implementation, so no
+floorplanner input can supply it.  A pin plan fixes it instead (below).
 
-| region (slice cols x rows) | tiles | cols | band | area margin | width margin | measured |
+### Calibration and the guarantee
+
+The two densities come from one rule, applied jointly to every region
+built with Vivado placing the pins: 40 regions of four RFP designs
+(xc7z020, Vivado 2019.1).  Each is the density of the densest region
+that routed every module, below the least-dense failure of that limit's
+mechanism:
+
+* AREA = 0.2494: GA b666's 1,596 pins on an 8-column, 1-row region's
+  400 tiles.  The least-dense area failure: GA b445 at 0.256 (one
+  module of 46 failed).
+* WIDTH = 43.32: GA b666's 648 pass-through bits over a 91.7-row band
+  on a 7-column, 3-row region.  The least-dense width failure: GA b666
+  at 50.5.
+
+So no measured failure is accepted.  `tests/test_pins.py` re-derives
+both densities from its table of the measured regions.
+
+**What OpenFLORA promises.**  A region it returns is no denser, in
+either limit, than regions that routed every module on the real part.
+Every one of the 17 measured regions the model accepts routed, and
+12 of them were built after a prediction was recorded.  It is an
+empirical promise, not a proof.  Once the model had its final form
+(the pass-through input and the exact solver), 9 regions were predicted
+to route under the constants then in force, and 8 routed.  The ninth, GA
+b445 at 0.93 x the area constant then in force (0.2760), failed one
+module of 46, and the rule lowered the area constant below it.
+
+**Why no further margin.**  The same shape at the same density routes
+or fails depending on where the static design puts the pins:
+
+| design | width density | x the constant | area density | placements | routed | failed (mechanism) |
 |---|---|---|---|---|---|---|
-| 22 x 1, X60Y0:X81Y49 | 550 | 11 | 50 | 1.22 | 4.40 | routed |
-| 18 x 1, X36..X53 (rows 0 and 1) | 450 | 9 | 50 | **1.00** | 3.60 | routed |
-| 14 x 3, X40Y0:X53Y149 | 1050 | 7 | 92 | 2.33 | 1.31 | routed |
-| 14 x 3 + BRAM, X54Y0:X67Y149 | 1200 | 8 | 69 | 2.67 | 2.33 | routed |
-| 12 x 2, X56Y50:X67Y149 | 600 | 6 | 92 | 1.33 | 1.31 | routed |
-| 10 x 2, X44Y50:X53Y149 | 500 | 5 | 100 | 1.11 | **1.00** | routed |
-| 8 x 3, X82..X89, X56..X63, X36..X43 | 600 | 4 | 138 | 1.33 | 0.58 | 2-9 of 33 failed |
-| 10 x 1, X44..X53 (rows 0 and 1) | 250 | 5 | 50 | 0.56 | 2.00 | 9 of 33 failed |
-| 10 x 3, X44Y0:X53Y149 | 750 | 5 | 138 | 1.67 | 0.67 | failed (rm_19, rm_27; see below) |
+| GA b666 | 16.5 | 0.38 | 0.200 | 2 | 2 | 0 |
+| GA b666 | 18.4 | 0.42 | 0.222 | 2 | 2 | 0 |
+| LeNet b3000 | 19.4 | 0.45 | 0.138 | 2 | 2 | 0 |
+| GA b666 | 20.7 | 0.48 | 0.249 | 2 | 2 | 0 |
+| GA b666 | 33.1 | 0.76 | 0.399 | 2 | 0 | 2 (area) |
+| GA b666 | 43.3 | 1.00 | 0.095/0.142 | 3 | 3 | 0 |
+| GA b666 | 50.5 | 1.17 | 0.111/0.166 | 10 | 8 | 2 (width) |
+| sobel b200 | 94.8 | 2.19 | 0.153 | 2 | 1 | 1 (width) |
+| GA b666 | 113.7 | 2.62 | 0.166 | 3 | 0 | 3 (width) |
 
-**Validation.**  Each prediction below was written down before the
-region was built.
+Failures were measured from 1.03 x the area constant and 1.17 x the
+width constant.  At 1.17 x the width constant, 2 of 10
+placements failed.  The constants sit below every measured failure.  A
+further derate would be a number with no measurement behind it.
 
-| region | model | "slices >= pins/1.77, slice cols >= pins/160" | measured |
+Per design (the full per-region table is in `tests/test_pins.py`):
+
+| design | pins | pass-through | regions | accepted (all routed) | of them predicted before the build | failures (all rejected) | routed but rejected |
+|---|---|---|---|---|---|---|---|
+| GA b666 | 1596 | 648 | 28 | 11 | 6 | 8 | 9 |
+| GA b445 | 2050 | 809 | 4 | 1 | 1 | 1 | 2 |
+| sobel b200 | 1472 | 586 | 4 | 2 | 2 | 1 | 1 |
+| LeNet b3000 | 1325 | 133 | 4 | 3 | 3 | 0 | 1 |
+| all | | | 40 | 17 | 12 | 10 | 13 |
+
+### Pin placement
+
+The static design fixes the pins before any module exists, and where
+it puts them is the scatter above.  UG909's remedy is to place them
+yourself (HD.PARTPIN_LOCS, one interconnect tile per pin).  OpenFLORA
+can write such a plan for the regions it returns:
+
+    openflora plan --csv demands.csv --pin-plan 5 --pins-file pins.csv \
+        --cell rp0=top/rp0_inst --cell rp1=top/rp1_inst --out-xdc fp.xdc
+
+`pins.csv` has one row per partition pin, `region,pin[,pair]`.  `pair`
+names the pin to put in the same interconnect tile, such as a slot's
+out-pin next to its in-pin.  `emit.partpin_plan` spreads the pairs and
+single pins evenly over the region's pin tiles: every interconnect tile
+of a pin column, less one row at the region's top and bottom edge.  It
+puts at most N pins in a tile, and the XDC gains one
+`set_property HD.PARTPIN_LOCS` line per pin.
+
+**The solver does not count on the plan.**  It sizes the regions by the
+limits above, as if Vivado placed the pins.  The pin-plan builds
+(GA b666) are the reason:
+
+| build | regions | pins | result |
 |---|---|---|---|
-| 14 slice cols + BRAM + 2 DSP x 1 row, X90Y50:X103Y99 | routes (area 1.11) | fails (700 slices) | routed 33 |
-| 16 slice cols + BRAM + DSP x 1 row, X98Y0:X113Y49 | routes (area 1.11) | fails (800 slices) | routed 33 |
-| 12 x 3, X56Y0:X67Y149 | routes (width 1.31: a 92-row band predicted; 111 measured) | routes | routed 33 |
-| 10 x 3 + DSP, X92Y0:X101Y149 | routes (width 1.31) | routes | routed 33 |
-| 8 slice cols + BRAM + DSP x 2 rows, X90Y50:X97Y149 | routes (width 1.31, area 1.33) | fails (800 slices, 8 slice cols) | 32 of 33 routed; rm_27 failed (20 signals, vertical wires) |
-| 10 x 3, X44Y0:X53Y149 | **routes** (the first, height-blind model: width margin 1.00) | routes | **failed** |
+| E1 | two 4-column, 3-row regions (8 slice cols x 3) | pairs in one tile, up to 8 a tile | 7 of 13 modules routed; modules that routed easily with Vivado's pins stopped converging (crowding) |
+| E2 | the same | `partpin_plan`, at most 4 a tile (2.7 on average) | 12 of 16 routed, 5 of them modules that failed there with Vivado's pins; the 4 that combine heavy relaying with a memory read did not converge |
+| E3 | two 1-row, 8-column regions (BRAM + 7 CLB; BRAM + DSP + 6 CLB) | `partpin_plan`, at most 5 a tile (4.15 on average) | all 33 routed in both |
+| E3v | the same | Vivado's own | all 33 routed in both, as the model predicted (area margin 1.11) |
 
-The last row refuted the first version of the model, which bounded
-width by columns alone.  Same columns as the 10 x 2 that routed, one
-row taller: Vivado spread the pins over 137 rows instead of 100, and a
-slot's in/out pins landed a median 47 rows apart instead of 9.  The
-pin band is the model's answer to that.  The two 3-row, 6-column regions
-above were built to test it.  The alternative fix, a lower width
-density for every region spanning all three rows, predicted they fail.
-They routed.
+* Within the limits, Vivado's own placement was enough.  E3's regions
+  routed without the plan (E3v), so the plan has no area gain to
+  credit.
+* Pairing relieves the width limit's cause.  In E2, five modules that
+  failed with Vivado's pins routed with the plan, but four did not.  How
+  much it relieves was not measured, so it earns no width credit.
+* Dense pairing is harmful: up to 8 a tile (E1) failed.
 
-The 2-row BRAM + DSP region is the model's one miss.  The 12 x 2
-region has the same margins and routed all 33.  The difference is
-where the static design put the pins: a slot's in/out pair a median 27
-rows apart in the BRAM + DSP region, 5 in the 12 x 2.  The miss was the single hardest module (it
-passes 647 of its 723 slot bits straight through).  Of the six regions
-with width margins of 1.0 to 1.31, five routed every module.  Treat a
-width margin below ~1.3 as "usually routes", not as a guarantee.
+Use it when a region fails on location, the scatter the limits leave
+room for.  A plan of at most 4 or 5 a tile, pairing each slot's pins,
+is the measured remedy worth trying.  It is not a guarantee.  The head
+build must apply the XDC, and every module then routes to the planned
+pins.
 
-The result dict reports, for a region with pins: `pins`, `pin_tiles`,
-`pin_cols`, `pin_band`, and both margins (capacity / demand).  A solve
-without `pins` builds exactly the model it always did: the HiGHS model
-files are byte-identical to the previous release's.
+### Special columns that cost a CLB column
+
+A site-less special column (a clock spine) has no sites, so a
+site-range pblock cannot own its interconnect tile.  That splits the
+tile's interconnect pair against static, and Vivado prohibits
+placement in the pair's CLB column ([Constraints 18-993]).  On
+xc7z020, a region covering x=33 loses CLB column 32 (100 SLICEL per
+clock-region row; four GA builds), and covering x=50 costs nothing.
+The device model's `special_splits` records this per special column,
+and the solver leaves the lost column out of the region's slice
+capacity and its pin columns (its interconnect still routes the
+module).  `tools/probe_specials.py` measures `special_splits` without a
+design: it places a one-cell design in a pair-aligned pblock around
+each special column and reads the [Constraints 18-993] lines.
+
+### How this relates to FLORA and the rest of the literature
+
+No published PR floorplanner we found models partition-pin
+routability quantitatively, and the limits above are OpenFLORA's own
+extension; they are not part of FLORA's formulation.  They add
+per-region constraints on FLORA's column and row cover variables and
+leave its resources, legality rules and objectives untouched.
+
+* **FLORA** [1] counts the region-static communication logic as static
+  and puts the wires between regions only into its wirelength
+  objective.  It has no routability constraint, and it names aspect
+  ratio and region-I/O wirelength as possible further metrics.  The pin
+  limits extend FLORA in that direction; they do not contradict it.
+* **DART** [2] parses Vivado's error after implementation and, for
+  resource errors, raises the margin and runs again.  It adds snapping
+  rules (an extra CLB margin; no region edge right next to a BRAM or
+  DSP column).  OpenFLORA instead sizes the region before
+  implementation so that the measured failure mechanisms do not occur.
+* **Vipin and Fahmy** [3] keep I/O in static and count wirelength as
+  Manhattan distance times wires.  Their survey [6] states that static
+  wires through a region congest it and that "even two PRRs with
+  identical sizes and resources may have different routing to the
+  static region depending on their relative positions".  The location
+  scatter measured here (below) agrees.
+* **PRFloor** [4] (the PlanAhead proxy-LUT flow) states that "the number
+  of CLBs along the edges of the PRRs should be large enough to avoid
+  routing congestion", without a number.  The area and width limits are
+  measured versions of that rule for Vivado's partition pins.
+* **PR-ESP** [5] adapts FLORA with a fixed accelerator-socket interface
+  and adds no routability constraint.
+* **UG909** [7] ("Partition Pin Placement") says the placer "attempts
+  to spread the partition pins, minimizing the number of partition pins
+  per interconnect along the edges, and increasing the PartPin density
+  towards the middle of the Pblock".  It warns that a custom
+  HD.PARTPIN_RANGE must be "wide enough to allow for spreading, or you
+  are likely to see congestion around the PartPins", and that "for
+  timing-critical interface signals or designs with high congestion, it
+  might be necessary to help guide the placement of the PartPins".  It
+  gives no capacity rule.  The measurements agree and put numbers on
+  it: the regions that failed for area are those where Vivado packed
+  beyond its spreading target (the Pblock property PARTPIN_SPREADING,
+  5 pins a tile by default in 2019.1, read with `report_property`), up
+  to 15 pins a tile.  "Pin placement" above is the "guide the placement"
+  remedy, measured.
 
 ## Other devices
 
 `xc7z020` (the Zynq-7020 on the Pynq-Z2) ships bundled and fully
-measured.  Adding a part is a recipe, not a code change: run
-`tools/probe_geometry.tcl` against the part in Vivado (no design
-needed), feed the output to `tools/build_device_model.py`, and pass the
-resulting JSON to `--device`.  The geometry side is fully probe-derived.
-The frame constants are 7-series values measured on xc7z020, so for
-another device family re-measure them before trusting the `frames`
-objective: generate two partials with known rectangles, run
-`openflora parse-bit`, and solve for the per-column-type counts.  Notes
-in `tools/build_device_model.py`.  The `routing` section (for the
-`pins` demand) is probe-derived too; its three calibrated constants
-were measured on xc7z020 with one design, so re-measure them on
-another family before trusting the pin limits there.
+measured.  Adding a 7-series part is a recipe, not a code change:
+
+1. `vivado -mode batch -source tools/probe_geometry.tcl -tclargs <part>`
+   (no design needed) writes the part's geometry: site columns,
+   per-row site counts (section 6, which lets the builder derive the
+   clock-region rows and leave partly occluded cells out) and the
+   interconnect inventory (section 5).
+2. `python tools/build_device_model.py <probe output> model.json`
+   builds a first device model.
+3. `python tools/probe_specials.py model.json <part> > probe_specials.tcl`,
+   then `vivado -mode batch -log probe_specials.log -source
+   probe_specials.tcl`, measures which CLB column each special column
+   costs a region that covers it.  This step needs no user design.
+4. `python tools/build_device_model.py <probe output> model.json
+   --specials probe_specials.log` adds `special_splits`; pass the JSON
+   to `--device`.
+
+The geometry, the `routing` section and `special_splits` are all
+probe-derived.  The probe and the builder were run on xc7z010 and
+xc7a35t as well as xc7z020; the routing facts per interconnect tile
+(16 partition-pin wires, 196 vertical and 124 horizontal crossings, 50
+tiles per clock-region row) came out the same on all three, and the
+bundled xc7z020 model regenerates byte for byte.  Two kinds of
+constant are measured on builds, not probed, and were measured on
+xc7z020 only:
+
+* the frame constants: re-measure them for another family before
+  trusting the `frames` objective.  Generate two partials with known
+  rectangles, run `openflora parse-bit`, and solve for the
+  per-column-type counts (notes in `tools/build_device_model.py`);
+* the partition-pin densities (AREA, WIDTH, 2.9 and the plan density):
+  they rest on Vivado 2019.1's pin placer and router on xc7z020.  On
+  another 7-series part with the same interconnect they are a
+  reasonable start.  On another family, or another Vivado version,
+  re-run the calibration (README "Calibration and the guarantee").
 
 ## Provenance
 
@@ -344,7 +499,10 @@ models and frame costs are measurement-based — Vivado geometry probes of
 the real part and byte-exact parses of partial bitstreams.  Published
 numeric device facts from the original authors were used only as an
 after-the-fact cross-check, and the single divergence found was resolved
-in favor of the measured map.
+in favor of the measured map.  The partition-pin limits are measured
+the same way, on Vivado builds of the real part.  Their semantics
+(PPLOCs, HD.PARTPIN_LOCS, PARTPIN_SPREADING) are UG909's, and their
+constants are fitted to the builds listed under "Partition pins".
 
 ## Tests
 
@@ -356,8 +514,10 @@ The suite pins the byte-exact reproduction of the measured partials
 emitter round-trip against the hand floorplan that ran on silicon, and
 end-to-end solves on the bundled device model against the recorded
 optima.  `tests/test_pins.py` pins the partition-pin model's verdict
-on every region measured on the real part, routed or failed, and on
-the validation regions.
+on every region measured on the real part, routed or failed, across
+four designs, and re-derives the two fitted densities from that table;
+`tests/test_pin_plan.py` covers the pass-through input, the pin plans
+and their CLI.
 
 ## Contributing
 
@@ -371,33 +531,49 @@ clean-room), and say how you measured any number you claim.
 
 ## References
 
-If you use this in academic work, cite FLORA — the formulation is theirs
-— and, if the frames objective matters to you, Vipin and Fahmy.
+If you use this in academic work, cite FLORA [1] -- the formulation is
+theirs -- and, if the frames objective matters to you, Vipin and Fahmy
+[3].  The partition-pin model, the pass-through input, pin plans and
+`special_splits` are OpenFLORA's own additions, not part of FLORA's
+formulation; [4]-[7] are the related work they were checked against
+("How this relates to FLORA and the rest of the literature").
 
-* B. B. Seyoum, A. Biondi, G. C. Buttazzo, *FLORA: FLoorplan Optimizer
-  for Reconfigurable Areas in FPGAs*, CODES+ISSS / ESWEEK–TECS special
-  issue, 2019.
-  [PDF](https://retis.santannapisa.it/~a.biondi/papers/CODES19.pdf) ·
-  [repository](https://github.com/biruk-belay/FLORA)
-* B. Seyoum, M. Pagani, A. Biondi, G. Buttazzo, *Automating the design
-  flow under dynamic partial reconfiguration for hardware-software
-  co-design in FPGA SoC*, ACM SAC 2021, pp. 481–490.
-  [repository](https://github.com/fred-framework/dart) ·
-  [FRED docs](https://fred-framework-docs.readthedocs.io/)
-* K. Vipin, S. A. Fahmy, *Architecture-Aware Reconfiguration-centric
-  Floorplanning for Partial Reconfiguration*, Proc. 8th Int. Conf. on
-  Reconfigurable Computing: Architectures, Tools and Applications
-  (ARC 2012).
-* AMD/Xilinx, *UG909: Vivado Design Suite User Guide — Dynamic Function
-  eXchange (Partial Reconfiguration)*.
-  [docs](https://docs.amd.com/r/en-US/ug909-vivado-partial-reconfiguration)
-* AMD/Xilinx, *UG470: 7 Series FPGAs Configuration User Guide*.
-  [docs](https://docs.amd.com/v/u/en-US/ug470_7Series_Config)
-* *Project X-Ray* — public 7-series bitstream documentation.
-  [repository](https://github.com/f4pga/prjxray)
-* Q. Huangfu, J. A. J. Hall — *HiGHS*, the open-source LP/MIP solver
-  this tool runs on.  [highs.dev](https://highs.dev) ·
-  [repository](https://github.com/ERGO-Code/HiGHS)
+1. B. B. Seyoum, A. Biondi, G. C. Buttazzo, *FLORA: FLoorplan Optimizer
+   for Reconfigurable Areas in FPGAs*, ACM Transactions on Embedded
+   Computing Systems 18(5s), 2019 (CODES+ISSS / ESWEEK-TECS special
+   issue).  doi:10.1145/3358202 ·
+   [PDF](https://retis.santannapisa.it/~a.biondi/papers/CODES19.pdf) ·
+   [repository](https://github.com/biruk-belay/FLORA)
+2. B. Seyoum, M. Pagani, A. Biondi, G. Buttazzo, *Automating the design
+   flow under dynamic partial reconfiguration for hardware-software
+   co-design in FPGA SoC*, ACM SAC 2021, pp. 481-490.
+   doi:10.1145/3412841.3441928 ·
+   [repository](https://github.com/fred-framework/dart) ·
+   [FRED docs](https://fred-framework-docs.readthedocs.io/)
+3. K. Vipin, S. A. Fahmy, *Architecture-Aware Reconfiguration-centric
+   Floorplanning for Partial Reconfiguration*, Proc. 8th Int. Symp. on
+   Applied Reconfigurable Computing (ARC 2012), LNCS 7199, pp. 13-25.
+4. T. D. A. Nguyen, A. Kumar, *PRFloor: An Automatic Floorplanner for
+   Partially Reconfigurable FPGA Systems*, ACM/SIGDA FPGA 2016.
+   doi:10.1145/2847263.2847270
+5. B. Seyoum, D. Giri, K.-L. Chiu, B. Natter, L. P. Carloni, *PR-ESP: An
+   Open-Source Platform for Design and Programming of Partially
+   Reconfigurable SoCs*, DATE 2023.
+6. K. Vipin, S. A. Fahmy, *FPGA Dynamic and Partial Reconfiguration: A
+   Survey of Architectures, Methods, and Applications*, ACM Computing
+   Surveys 51(4), article 72, 2018.  doi:10.1145/3193827
+7. AMD/Xilinx, *UG909: Vivado Design Suite User Guide -- Dynamic Function
+   eXchange (Partial Reconfiguration)*, section "Partition Pin
+   Placement" (quoted from the 2023.1 edition; measured behavior from
+   Vivado 2019.1).
+   [docs](https://docs.amd.com/r/2023.1-English/ug909-vivado-partial-reconfiguration/Partition-Pin-Placement)
+8. AMD/Xilinx, *UG470: 7 Series FPGAs Configuration User Guide*.
+   [docs](https://docs.amd.com/v/u/en-US/ug470_7Series_Config)
+9. *Project X-Ray* -- public 7-series bitstream documentation.
+   [repository](https://github.com/f4pga/prjxray)
+10. Q. Huangfu, J. A. J. Hall -- *HiGHS*, the open-source LP/MIP solver
+    this tool runs on.  [highs.dev](https://highs.dev) ·
+    [repository](https://github.com/ERGO-Code/HiGHS)
 
 ## License
 
