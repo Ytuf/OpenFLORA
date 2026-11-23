@@ -58,8 +58,8 @@ units), DSP — and the optional sixth is measured occupied slices:
 
 An optional seventh column, `pins`, is the region's partition-pin count
 (the bit count of its ports).  It adds the partition-pin site constraint
-described under "Partition pins" below; `--pin-headroom` is its
-calibration.
+described under "Partition pins" below.  By default it is the exact
+bound; `--pin-headroom` lets a caller pass a measured headroom instead.
 
 Providing the measured `slices` column is strongly recommended.  Without
 it the solver falls back to ceil(lut/4), which assumes perfect packing.
@@ -205,7 +205,8 @@ OpenFLORA adds the type PIN:
   model's `routing` section).
 * Module-routable columns are the CLB, BRAM and DSP columns.  A special
   (site-less) column's interconnect is left out.
-* eps_P is the calibrated pin headroom (below).
+* eps_P is the pin headroom.  Its default, 1, is the exact bound; a
+  caller may pass a measured value (below).
 
 OpenFLORA's MILP sums per-cell cover variables instead of FLORA's
 linearized fingerprints; the sum is the same.
@@ -266,15 +267,21 @@ needs a demand that provably crosses the cut:
   one-way capacity above.  OpenFLORA's own plans put each pair in one
   tile, so the demand is 0 (see "Pin placement").
 
-### The calibration: `--pin-headroom`
+### The pin headroom: exact by default, a measured value to pass
 
-Vivado fails long before the sites run out.  The crowded pins' routes
-collide on a node that two neighbouring pins both need.  So, like
-`--headroom`, the solver uses a calibrated fraction of the exact
-capacity:
+**The default is `--pin-headroom 1`** (`milp.PIN_HEADROOM`): the
+provable bound above, which no device-independent tuning enters.
 
-* **Default:** `--pin-headroom` (eps_P, `milp.PIN_HEADROOM`) = 0.0403,
-  that is 3.99 pins per interconnect tile.
+Vivado fails long before the sites run out: the crowded pins' routes
+collide on a node that two neighbouring pins both need.  So OpenFLORA
+also records a measured headroom that a caller may pass, like
+`--headroom`, for designs like those it was measured on:
+
+* **Measured value:** `--pin-headroom 0.0403`
+  (`milp.PIN_HEADROOM_MEASURED_42`), that is 3.99 pins per interconnect
+  tile.  It holds for designs like those below: every port bit
+  registered, wide register-file slot interfaces, xc7z020, Vivado
+  2019.1.  It is not a default.
 * **Builds:** 42 regions on xc7z020 with Vivado 2019.1, in which Vivado
   placed the pins and every module was implemented in the region.  They
   cover four RFP designs: GA at budgets 666 (33 modules, 1,596 pins) and
@@ -291,18 +298,19 @@ capacity:
   * Least-dense area failure: GA b445 on a 10-column, 1-row region,
     0.0414 (one module of 46).
   * The other area failures: GA b666 on 5 columns x 1 row, 0.0645.
-* `tests/test_pins.py` re-derives the default from its table of all 42
-  regions.
+* `tests/test_pins.py` re-derives the measured value from its table of
+  all 42 regions.
 
-The re-evaluation of every measured region at the default:
+The re-evaluation of every measured region, **at the measured headroom
+0.0403**:
 
-| design | pins | regions | accepted | accepted, routed | accepted, failed (width) | rejected, failed (area) | rejected, routed |
-|---|---|---|---|---|---|---|---|
-| GA b666 | 1596 | 30 | 28 | 21 | 7 | 2 | 0 |
-| GA b445 | 2050 | 4 | 3 | 3 | 0 | 1 | 0 |
-| sobel b200 | 1472 | 4 | 4 | 3 | 1 | 0 | 0 |
-| LeNet b3000 | 1325 | 4 | 3 | 3 | 0 | 0 | 1 |
-| all | | 42 | 38 | 30 | 8 | 3 | 1 |
+| design | pins | regions | accepted at 0.0403 | accepted, routed (0.0403) | accepted, failed: width (0.0403) | rejected, failed: area (0.0403) | rejected, routed (0.0403) | accepted at the default 1.0 (routed / failed) |
+|---|---|---|---|---|---|---|---|---|
+| GA b666 | 1596 | 30 | 28 | 21 | 7 | 2 | 0 | 30 (21 / 9) |
+| GA b445 | 2050 | 4 | 3 | 3 | 0 | 1 | 0 | 4 (3 / 1) |
+| sobel b200 | 1472 | 4 | 4 | 3 | 1 | 0 | 0 | 4 (3 / 1) |
+| LeNet b3000 | 1325 | 4 | 3 | 3 | 0 | 0 | 1 | 4 (4 / 0) |
+| all |  | 42 | 38 | 30 | 8 | 3 | 1 | 42 (31 / 11) |
 
 * **All 8 accepted failures are width failures,** the mechanism not
   modeled.
@@ -327,9 +335,13 @@ the pins:
 | LeNet b3000 | 4 x 3 | 2 | 2 | 0 | 2.23% |
 
 The per-region table is in `ROUTABILITY_REPORT.md` and
-`tests/test_pins.py`.  The default is a calibration on these builds.  It
-is not a promise that a region routes, and other parts, Vivado versions
-or interface styles may need another value.
+`tests/test_pins.py`.  **At the default headroom (1, exact)** all 42
+measured regions are accepted: the 31 that routed and all 11 that failed
+(3 for crowded pins, 8 for width).  The exact bound rules out only
+regions that cannot hold their pins at all.  The measured value is a
+calibration on these builds.  It is not a promise that a region routes,
+and other parts, Vivado versions or interface styles may need another
+value.
 
 ### Pin placement
 
@@ -452,11 +464,12 @@ xc7z020 only:
   trusting the `frames` objective.  Generate two partials with known
   rectangles, run `openflora parse-bit`, and solve for the
   per-column-type counts (notes in `tools/build_device_model.py`);
-* the pin headroom (`--pin-headroom`): it rests on Vivado 2019.1's pin
-  placer and router on xc7z020.  The exact site count it scales is
-  probed, so on another 7-series part it is a reasonable start.  On
-  another family, or another Vivado version, re-run the calibration
-  (README "The calibration: `--pin-headroom`").
+* the measured pin headroom (0.0403, passed with `--pin-headroom`): it
+  rests on Vivado 2019.1's pin placer and router on xc7z020 and on the
+  measured designs.  The default (1) is exact on any part, because the
+  site count it scales is probed.  For a measured value on another
+  family, Vivado version or design style, re-run the measurement (README
+  "The pin headroom").
 
 ## Provenance
 
@@ -473,8 +486,8 @@ numeric device facts from the original authors were used only as an
 after-the-fact cross-check, and the single divergence found was resolved
 in favor of the measured map.  The partition-pin site count is probed
 the same way.  Its semantics (PPLOCs, HD.PARTPIN_LOCS) are UG909's.  Its
-one calibration, the pin headroom, is fitted to the builds listed under
-"Partition pins".
+default is the exact bound.  The measured pin headroom a caller may
+pass is fitted to the builds listed under "Partition pins".
 
 ## Tests
 
@@ -487,8 +500,8 @@ emitter round-trip against the hand floorplan that ran on silicon, and
 end-to-end solves on the bundled device model against the recorded
 optima.  `tests/test_pins.py` pins the partition-pin model's verdict
 on every region measured on the real part, routed or failed, across
-four designs.  It checks that the constraint is exact at headroom 1, and
-re-derives the default pin headroom from that table.
+four designs.  It checks that the default is the exact bound, and
+re-derives the measured pin headroom from that table.
 `tests/test_pin_plan.py` covers the pin plans, their exact cut demand
 and their CLI.
 

@@ -1,8 +1,9 @@
-"""Partition-pin sites: the optional ``pins`` demand (milp.PIN_HEADROOM,
-``pin_headroom``; README "Partition pins").
+"""Partition-pin sites: the optional ``pins`` demand (``pin_headroom``,
+default milp.PIN_HEADROOM = 1, the exact bound; milp.PIN_HEADROOM_MEASURED_42,
+the measured value a caller may pass; README "Partition pins").
 
 The constraint is exact at pin_headroom 1 (one pin per routing node of the
-region's module-routable interconnect tiles) and calibrated below it.
+region's module-routable interconnect tiles).
 MEASURED is every region built on the real part (xc7z020, Vivado 2019.1)
 with Vivado placing the partition pins, for four RFP designs.  A region
 "routed" when every module built in it routed, and "failed" when at least
@@ -12,11 +13,12 @@ the overlapping nodes: "area" (collisions among crowded pins) or "width"
 region whose verdict was predicted and recorded before it was built (under
 the model of the time).
 
-PIN_HEADROOM is the fit rule over this table: the densest routed region
+PIN_HEADROOM_MEASURED_42 is the fit rule over this table: the densest routed region
 below the least-dense area failure.  No area failure is accepted.  The width
 failures are accepted (the model does not cover them: docs/LIMITS.md) and
-listed in ACCEPTED_FAILURES; the routed regions the headroom rejects are
-listed in SAFE_MISSES."""
+listed in ACCEPTED_FAILURES; the routed regions that headroom rejects are
+listed in SAFE_MISSES.  At the default (exact) headroom every measured
+region is accepted."""
 import pytest
 
 # partition pins: port bits of the region, clock excluded
@@ -92,6 +94,8 @@ SAFE_MISSES = [
 
 
 def cap(fp, dev, design, c0, c1, rows, **kw):
+    """The site check at the measured headroom, unless one is given."""
+    kw.setdefault("pin_headroom", fp.milp.PIN_HEADROOM_MEASURED_42)
     return fp.milp.pin_capacity(dev, list(range(c0, c1 + 1)), rows,
                                 DESIGNS[design], **kw)
 
@@ -126,7 +130,25 @@ def test_headroom_is_the_fit(fp, dev):
     bad = min(use(fp, dev, x) for x in MEASURED if x[5] == "area")
     ok = max(u for u in (use(fp, dev, x) for x in MEASURED if x[4] == "routed")
              if u < bad - 1e-12)
-    assert abs(ok - fp.milp.PIN_HEADROOM) < 1e-12
+    assert abs(ok - fp.milp.PIN_HEADROOM_MEASURED_42) < 1e-12
+
+
+def test_default_is_exact(fp, dev):
+    """The default pin headroom is the exact bound, not a calibration: a
+    region with one pin per routing node is feasible without passing a
+    headroom, and one more pin is not.  Every measured region, routed or
+    failed, is accepted at the default."""
+    assert fp.milp.PIN_HEADROOM == 1.0
+    keep = set((c, 1) for c in range(40, 44)) | {(25, 0), (22, 0)}
+    forbid = [(c, r) for c in dev.xs for r in range(dev.nrows) if (c, r) not in keep]
+    sites = fp.milp.pin_capacity(dev, list(range(40, 44)), [1], 1)["sites"]
+    d = {"lut": 0, "ff": 0, "bram": 0, "dsp": 0, "slices": 100}
+    fp.milp.solve(dev, {"rp0": dict(d, pins=sites)}, objective="wr",
+                  forbid_cells=forbid)
+    with pytest.raises(RuntimeError):
+        fp.milp.solve(dev, {"rp0": dict(d, pins=sites + 1)}, objective="wr",
+                      forbid_cells=forbid)
+    assert all(accepted(cap(fp, dev, *x[:4], pin_headroom=None)) for x in MEASURED)
 
 
 def test_exact_bound_at_headroom_one(fp, dev):
@@ -195,23 +217,34 @@ def test_pins_limits_hold(fp, dev, objective):
 
 
 def test_headroom_is_a_parameter(fp, dev):
-    """A lower pin headroom needs more sites: the default optimum's regions
-    do not all survive half the headroom, and the half-headroom solve's do."""
-    half = 0.5 * fp.milp.PIN_HEADROOM
+    """A lower pin headroom needs more sites: at the measured headroom the
+    optimum's regions do not all survive half of it, and the half-headroom
+    solve's do."""
+    full = fp.milp.PIN_HEADROOM_MEASURED_42
+    half = 0.5 * full
     res = fp.milp.solve(dev, demands(pins=GA_PINS), objective="wr",
                         pin_headroom=half)
     for r in res["regions"].values():
         assert fp.milp.pin_capacity(dev, r["cols"], r["rows"], GA_PINS,
                                     pin_headroom=half)["margin"] >= 1 - 1e-9
-    base = fp.milp.solve(dev, demands(pins=GA_PINS), objective="wr")
+    base = fp.milp.solve(dev, demands(pins=GA_PINS), objective="wr",
+                         pin_headroom=full)
     assert any(fp.milp.pin_capacity(dev, r["cols"], r["rows"], GA_PINS,
                                     pin_headroom=half)["margin"] < 1
                for r in base["regions"].values())
 
 
 def test_too_many_pins_is_infeasible(fp, dev):
+    # more pins than the whole device has partition-pin sites: infeasible at
+    # the exact bound; 40,000 is infeasible already at the measured headroom
+    rt = dev.raw["routing"]
+    cols = [c for c in dev.xs if dev.col_type(c) in rt["module_routing_types"]]
+    every = fp.milp.pin_capacity(dev, cols, list(range(dev.nrows)), 1)["sites"]
     with pytest.raises(RuntimeError):
-        fp.milp.solve(dev, demands(pins=40000), objective="wr")
+        fp.milp.solve(dev, demands(pins=every + 1), objective="wr")
+    with pytest.raises(RuntimeError):
+        fp.milp.solve(dev, demands(pins=40000), objective="wr",
+                      pin_headroom=fp.milp.PIN_HEADROOM_MEASURED_42)
 
 
 def test_pins_need_the_routing_section(fp, dev):

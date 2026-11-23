@@ -44,9 +44,8 @@ costs exact rather than fingerprint-approximated.  Two extensions:
   * partition-pin sites (OpenFLORA's addition, in the form of FLORA's
     Constraint 5 with one more resource type): a region whose demand names
     its ``pins`` must contain that many partition-pin sites -- interconnect
-    routing nodes, counted from the device -- times the calibrated
-    ``pin_headroom``.  At pin_headroom 1 it is a necessary condition (README
-    "Partition pins").  Without ``pins`` nothing is added.
+    routing nodes, counted from the device -- times ``pin_headroom``.  At the
+    default, 1, it is a necessary condition (README "Partition pins").  Without ``pins`` nothing is added.
 
 Objective "wr" is FLORA's wasted-resources metric (their eq. 3) with weights
 nu_t = 1/T_t (T_t = device total of type t) and the wirelength term dropped
@@ -110,16 +109,21 @@ DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins")
 # holds at most one pin per routing node of its module-routable interconnect
 # tiles (CLB, BRAM and DSP columns; a special column's tiles have no sites, so
 # a site-range pblock does not own them).  ``wires_per_tile`` in the device
-# model's ``routing`` section is that count, probed from the part.  The exact
-# condition is pins <= wires_per_tile * tiles.  Vivado fails well before it,
-# so the solver uses
-#     pins <= PIN_HEADROOM * wires_per_tile * tiles,
-# PIN_HEADROOM being a calibration on builds, like ``headroom``: the
-# densest region that routed every module, below the least-dense region that
-# failed for crowded pins (tests/test_pins.py re-derives it).  GA b666's
-# 1,596 pins on an 8-column, 1-row region (400 tiles x 99 nodes) routed; GA
-# b445 at 2,050 on 500 tiles failed (one module of 46).
-PIN_HEADROOM = 1596 / (400 * 99)
+# model's ``routing`` section is that count, probed from the part.  The solver
+# enforces
+#     pins <= pin_headroom * wires_per_tile * tiles,
+# and the default pin_headroom, PIN_HEADROOM = 1, is the exact bound: a
+# region violating it cannot hold its pins.  Vivado fails well before it, so a
+# caller may pass a measured headroom instead, like ``headroom``.
+PIN_HEADROOM = 1.0
+# The fraction measured on 42 regions built on xc7z020 with Vivado 2019.1
+# (four designs whose modules register every port bit behind wide slot
+# interfaces): the densest region that routed every module, below the
+# least-dense region that failed for crowded pins (tests/test_pins.py
+# re-derives it) -- 1,596 pins on an 8-column, 1-row region (400 tiles x 99
+# nodes) routed; 2,050 pins on 500 tiles failed (one module of 46).  Not a
+# default: pass it (``--pin-headroom``) for designs like those.
+PIN_HEADROOM_MEASURED_42 = 1596 / (400 * 99)
 
 
 def slice_demand(d):
@@ -179,9 +183,10 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
              derate or headroom).  A region without ``pins``
              (or with 0) gets no routability constraint, and a solve with no
              ``pins`` anywhere builds exactly the model it always did.
-    pin_headroom: the calibrated fraction of a region's partition-pin
-             sites the solver lets its pins use (default PIN_HEADROOM; 1.0 is
-             the exact, necessary-condition bound).
+    pin_headroom: the fraction of a region's partition-pin sites the
+             solver lets its pins use.  Default PIN_HEADROOM = 1.0, the exact,
+             necessary-condition bound; PIN_HEADROOM_MEASURED_42 is the
+             value measured on 42 xc7z020 regions (README "Partition pins").
     objective: "frames" (minimize total configuration frames),
                "wr" (FLORA wasted-resources, nu_t = 1/T_t), or
                "wr+wl" (FLORA's full a*WR + b*wirelength -- see below and

@@ -12,11 +12,13 @@ device model for other 7-series parts.
   form: pins <= pin_headroom x routing nodes of the region's
   module-routable interconnect tiles (99 per tile, probed).  It is exact,
   a necessary condition, at headroom 1.  README "Partition pins".
-- **`--pin-headroom`** (`milp.PIN_HEADROOM`, default 0.0403): the
-  calibrated fraction of those sites Vivado 2019.1 used without failing,
-  fitted on 42 regions of four designs built on xc7z020.  The calibration
-  covers crowded pins only.  Pass-through wiring between pins Vivado
-  places apart is not modeled (docs/LIMITS.md item 10).
+- **`--pin-headroom`** (default 1.0, `milp.PIN_HEADROOM`: the exact bound).
+  `milp.PIN_HEADROOM_MEASURED_42` = 0.0403 is the fraction of those sites
+  Vivado 2019.1 used without failing on 42 regions of four designs built on
+  xc7z020 (every port bit registered, wide register-file slots).  It is a
+  value a caller may pass for designs like those, not a default.  It
+  covers crowded pins only; pass-through wiring between pins Vivado places
+  apart is not modeled (docs/LIMITS.md item 10).
 - **Pin plans** (`emit.partpin_plan`, `--pin-plan N --pins-file F`): the
   XDC can place each region's partition pins (HD.PARTPIN_LOCS), each
   in/out pair in one interconnect tile, at most N a tile.

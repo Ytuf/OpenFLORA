@@ -9,7 +9,7 @@ LUT / FF / BRAM / DSP counts) plus an optional ``slices`` column
 (measured occupied slices -- report_utilization -pblocks, "Slice" row, on
 a routed design), then an optional ``pins`` column (the region's
 partition pins, one per bit of its ports, which adds the partition-pin site
-constraint -- milp.PIN_HEADROOM, ``--pin-headroom``):
+constraint -- ``--pin-headroom``, default 1.0, the exact bound):
 
     name,lut,ff,bram,dsp,slices
     rp0,2874,2026,0,12,1127
@@ -191,9 +191,11 @@ def main(argv=None):
     p.add_argument("--pin-headroom", type=float, default=None, metavar="F",
                    help="the fraction of a region's partition-pin sites "
                         "(routing nodes of its interconnect tiles) its pins "
-                        "may use; default milp.PIN_HEADROOM, calibrated on "
-                        "builds (README 'Partition pins'); 1.0 is the exact "
-                        "bound")
+                        "may use; default 1.0, the exact bound.  0.0403 "
+                        "(milp.PIN_HEADROOM_MEASURED_42) is the value "
+                        "measured on 42 xc7z020 / Vivado 2019.1 regions of "
+                        "designs that register every port bit behind wide "
+                        "slot interfaces (README 'Partition pins')")
     p.add_argument("--pin-plan", type=int, default=None, metavar="N",
                    help="with --pins-file and --cell, the XDC also places the "
                         "regions' partition pins (HD.PARTPIN_LOCS), at most N "

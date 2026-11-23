@@ -150,13 +150,16 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
    overhead) must be re-measured before the `frames` objective is trusted
    on another device family — see `tools/build_device_model.py`.
 
-10. **Partition pins: one exact resource, one calibration, and an
-    unmodeled mechanism.**  The pin-site constraint (README "Partition
-    pins") is exact at `--pin-headroom 1`: a region violating it cannot
-    hold its pins.  The default headroom is a calibration on 42 regions of
-    four RFP designs, built on xc7z020 with Vivado 2019.1.  Every port bit
-    of those modules is registered, and their interfaces are wide
-    register-file slots.  What is not modeled:
+10. **Partition pins: one exact resource, an optional measured headroom,
+    and an unmodeled mechanism.**  The pin-site constraint (README
+    "Partition pins") is exact at its default, `--pin-headroom 1`: a
+    region violating it cannot hold its pins.  At that default every
+    measured region was accepted, including all 11 that failed.  The
+    measured value 0.0403 a caller may pass was fitted on 42 regions of
+    four designs built on xc7z020 with Vivado 2019.1.  Every port bit of
+    those modules is registered, and their interfaces are wide
+    register-file slots.  A design with a different interface style is
+    outside the measured set.  What is not modeled:
     * **Pass-through wiring between pins Vivado places apart** (the
       "width" mechanism).  A module that passes a slot's bits from its
       in-pins to its out-pins must wire between them, across the
@@ -165,8 +168,8 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
       vertical wires of the middle rows run out.  No lower bound on that
       wiring follows from the floorplan: a placement that co-locates each
       pair needs none.  So it depends on Vivado's placer, and the solver
-      does not model it.  At the default headroom, 8 of the 38 accepted
-      measured regions failed this way: GA's 4-column, 3-row regions in
+      does not model it.  At the measured headroom (0.0403), 8 of the 38
+      accepted measured regions failed this way: GA's 4-column, 3-row regions in
       all three placements, its 6-column, 2-row regions in 3 of 10, a
       5-column, 3-row GA region, and one of sobel's two 4-column, 3-row
       regions.  The remedy
