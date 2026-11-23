@@ -60,6 +60,9 @@ An optional seventh column, `pins`, is the region's partition-pin count
 (the bit count of its ports).  It adds the partition-pin site constraint
 described under "Partition pins" below.  By default it is the exact
 bound; `--pin-headroom` lets a caller pass a measured headroom instead.
+An optional eighth, `out_pins`, is the count of its output pins whose
+nets reach logic outside the region.  It adds the boundary constraint
+("Cuts", below): every one needs its own wire out of the region.
 
 Providing the measured `slices` column is strongly recommended.  Without
 it the solver falls back to ceil(lut/4), which assumes perfect packing.
@@ -176,10 +179,11 @@ A region that holds its logic can still fail to route: every bit of a
 reconfigurable partition's ports is a partition pin, and every pin needs
 a place inside the region.  The optional seventh CSV column, `pins` (the
 region's port bits, clock excluded), adds one resource to FLORA's
-formulation: partition-pin sites.
+formulation: partition-pin sites.  The optional eighth, `out_pins`, adds
+the region's boundary (see "Cuts" below).
 
-    name,lut,ff,bram,dsp,slices,pins
-    rp0,446,1738,0,0,1000,1596
+    name,lut,ff,bram,dsp,slices,pins,out_pins
+    rp0,446,1738,0,0,1000,1596,798
 
 ### The constraint, in FLORA's formulation
 
@@ -247,12 +251,21 @@ fit only if max(N - 83c, 0) + max(S - 83c, 0) <= 30c, that is N, S <=
 direction can carry.  A cut constraint also
 needs a demand that provably crosses the cut:
 
-* **The region's boundary.**  Every output pin's static route, and every
-  static net into the region, must cross it.  With only the pin count
-  given, no useful lower bound follows: all input pins could share one
-  static net.  OpenFLORA therefore adds no boundary constraint.  The
-  wires that cross the boundary going inward numbered 3.5 x or more the
-  pins of every measured region.
+* **The region's boundary.**  Every output pin's static net must cross
+  it going outward, each on its own wire, since static logic is not
+  placed in the region.  The optional `out_pins` column (the output pins
+  whose nets reach logic outside the region; an output nothing outside
+  reads needs no wire out) adds that constraint, exact, with no
+  headroom: `out_pins` <= the one-way wires leaving the region.  On
+  xc7z020 that is 83 + 83 + 2 x 30 = 226 per interconnect column across
+  the top and bottom edges plus 56 + 56 + 2 x 12 = 136 per interconnect
+  row across the sides (`milp.out_pin_capacity`).  Every column of the
+  span counts, a special column's too, which can only loosen the bound;
+  the static design's own use of those wires is not known, so the
+  constraint is necessary, not sufficient.  Inputs give no such bound:
+  all input pins could share one static net.  The wires leaving every
+  measured region numbered 4.4 x or more its pins, so on the measured
+  designs the constraint never binds.
 * **Interior cuts, Vivado placing the pins.**  There is no lower bound.
   A placement that puts each slot's in-pin and out-pin in one tile
   needs no pass-through wiring across any interior cut.  The static
@@ -520,7 +533,8 @@ end-to-end solves on the bundled device model against the recorded
 optima.  `tests/test_pins.py` pins the partition-pin model's verdict
 on every region measured on the real part, routed or failed, across
 four designs.  It checks that the default is the exact bound, and
-re-derives the measured pin headroom from that table.
+re-derives the measured pin headroom from that table; it also covers the
+`out_pins` boundary constraint.
 `tests/test_pin_plan.py` covers the pin plans, their exact cut demand
 and their CLI.
 

@@ -58,9 +58,10 @@ def test_plan_xdc(fp, dev):
                         "[get_pins {top/rp0_inst/i0[0]}]")
 
 
-def test_csv_eighth_column_is_an_error(fp, tmp_path):
+def test_csv_ninth_column_is_an_error(fp, tmp_path):
+    # the eighth is out_pins (tests/test_pins.py); nothing follows it
     p = tmp_path / "d.csv"
-    p.write_text("rp0,446,1738,0,0,1000,1596,648\n")
+    p.write_text("rp0,446,1738,0,0,1000,1596,648,1\n")
     with pytest.raises(ValueError):
         fp.cli.read_demands_csv(str(p))
 

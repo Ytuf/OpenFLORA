@@ -181,8 +181,10 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
       bracket them: at most 5 a tile routed, up to 8 failed.
     * **Location.**  The same shape routes in one place and fails in
       another, depending on where the static design puts the pins.
-    * **The region boundary and the static side.**  Static nets that
-      cross the region and the static design's own congestion are not
+    * **The region boundary and the static side.**  Given `out_pins`,
+      the output pins' wires out of the region are checked against every
+      wire leaving it.  Static nets that cross the region, the static
+      design's own use of the boundary wires and its congestion are not
       modeled.  The wires entering the boundary numbered 3.5 x or more the
       pins of every measured region.
     * **The headroom outside the measured set:** another part, another

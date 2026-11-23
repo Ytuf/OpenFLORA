@@ -267,3 +267,90 @@ def test_csv_pins_column(fp, tmp_path):
     p.write_text("rp0,446,1738,0,0,1000,-1\n")
     with pytest.raises(ValueError):
         fp.cli.read_demands_csv(str(p))
+
+
+# --- output pins on the boundary: the optional ``out_pins`` demand ---------
+
+def test_out_pin_capacity_counts_every_edge(fp, dev):
+    # 12 interconnect columns x 1 row: (83 + 83 + 2 x 30) wires a column
+    # across the top and bottom, (56 + 56 + 2 x 12) a row across the sides
+    r = fp.milp.out_pin_capacity(dev, list(range(40, 52)), [0], 1000)
+    assert (r["cols"], r["rows"]) == (12, 50)
+    assert r["wires"] == 12 * 226 + 50 * 136
+    assert abs(r["margin"] - r["wires"] / 1000.0) < 1e-12
+    # a special column's interconnect counts (more wires only loosens it)
+    assert fp.milp.out_pin_capacity(dev, list(range(30, 36)), [1], 1)["cols"] == 6
+
+
+def test_out_pins_accept_every_measured_region(fp, dev):
+    """Whatever a measured region's output count, it is at most its pins, and
+    the wires leaving every measured region are 4.4 x or more its pins: the
+    boundary constraint accepts every region built, routed or failed."""
+    worst = min(fp.milp.out_pin_capacity(dev, list(range(x[1], x[2] + 1)), x[3],
+                                         DESIGNS[x[0]])["margin"]
+                for x in MEASURED)
+    assert worst >= 4.4
+
+
+def test_without_out_pins_no_out_keys(fp, dev):
+    a = fp.milp.solve(dev, demands(pins=GA_PINS), objective="wr")
+    b = fp.milp.solve(dev, demands(pins=GA_PINS, out_pins=0), objective="wr")
+    strip = lambda res: {k: (v["cols"], v["rows"]) for k, v in res["regions"].items()}
+    assert strip(a) == strip(b)
+    for r in a["regions"].values():
+        assert "out_pins" not in r and "out_wires" not in r
+
+
+def test_out_pins_bind_where_pins_do_not(fp, dev):
+    """One wire more than any of the unconstrained optimum's regions has
+    leaving it: the partition-pin sites (99 a tile) still accept those
+    regions, the boundary rejects them, and the solve finds regions that
+    carry the outputs."""
+    base = fp.milp.solve(dev, demands(), objective="wr")
+    need = 1 + max(fp.milp.out_pin_capacity(dev, r["cols"], r["rows"], 1)["wires"]
+                   for r in base["regions"].values())
+    for r in base["regions"].values():
+        assert fp.milp.pin_capacity(dev, r["cols"], r["rows"], need)["margin"] >= 1
+    strip = lambda res: {k: (v["cols"], v["rows"]) for k, v in res["regions"].items()}
+    res = fp.milp.solve(dev, demands(pins=need, out_pins=need), objective="wr")
+    assert strip(res) != strip(base)
+    for r in res["regions"].values():
+        assert r["out_pins"] == need and r["out_margin"] >= 1 - 1e-9
+        assert r["out_wires"] == fp.milp.out_pin_capacity(dev, r["cols"], r["rows"],
+                                                          need)["wires"]
+
+
+def test_too_many_out_pins_is_infeasible(fp, dev):
+    every = fp.milp.out_pin_capacity(dev, dev.xs, list(range(dev.nrows)), 1)["wires"]
+    with pytest.raises(RuntimeError):
+        fp.milp.solve(dev, demands(out_pins=every + 1), objective="wr")
+
+
+def test_out_pins_above_pins_is_an_error(fp, dev):
+    with pytest.raises(ValueError):
+        fp.milp.solve(dev, demands(pins=100, out_pins=101), objective="wr")
+
+
+def test_out_pins_need_the_one_way_crossings(fp, dev):
+    raw = dict(dev.raw)
+    raw["routing"] = dict(raw["routing"])
+    raw["routing"].pop("one_way_crossings_per_tile")
+    bare = fp.device.Device(raw)
+    fp.milp.solve(bare, demands(pins=GA_PINS), objective="wr")   # fine without
+    with pytest.raises(ValueError):
+        fp.milp.solve(bare, demands(out_pins=800), objective="wr")
+
+
+def test_csv_out_pins_column(fp, tmp_path):
+    p = tmp_path / "d.csv"
+    p.write_text("name,lut,ff,bram,dsp,slices,pins,out_pins\n"
+                 "rp0,446,1738,0,0,1000,1596,798\n")
+    d = fp.cli.read_demands_csv(str(p))
+    assert (d["rp0"]["pins"], d["rp0"]["out_pins"]) == (1596, 798)
+    p.write_text("rp0,446,1738,0,0,1000,1596\n")
+    assert "out_pins" not in fp.cli.read_demands_csv(str(p))["rp0"]
+    for bad in ("rp0,446,1738,0,0,1000,1596,-1\n",
+                "rp0,446,1738,0,0,1000,1596,798,1\n"):
+        p.write_text(bad)
+        with pytest.raises(ValueError):
+            fp.cli.read_demands_csv(str(p))

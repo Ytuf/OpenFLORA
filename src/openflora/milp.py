@@ -45,7 +45,13 @@ costs exact rather than fingerprint-approximated.  Two extensions:
     Constraint 5 with one more resource type): a region whose demand names
     its ``pins`` must contain that many partition-pin sites -- interconnect
     routing nodes, counted from the device -- times ``pin_headroom``.  At the
-    default, 1, it is a necessary condition (README "Partition pins").  Without ``pins`` nothing is added.
+    default, 1, it is a necessary condition (README "Partition pins").  Without ``pins`` nothing is added;
+  * output pins on the region's boundary (OpenFLORA's addition): a region
+    whose demand names its ``out_pins`` must have that many interconnect
+    wires leaving it, since every output pin's static net crosses the
+    region's edge going outward on a wire of its own (the device model's
+    one-way crossings; ``out_pin_capacity``).  A necessary condition;
+    without ``out_pins`` nothing is added.
 
 Objective "wr" is FLORA's wasted-resources metric (their eq. 3) with weights
 nu_t = 1/T_t (T_t = device total of type t) and the wirelength term dropped
@@ -101,7 +107,7 @@ import highspy
 from . import frames as _frames
 from . import emit as _emit
 
-DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins")
+DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins", "out_pins")
 
 # Partition-pin sites (the optional ``pins`` demand; README "Partition
 # pins").  Every partition pin is anchored on its own routing node (PPLOC) in
@@ -124,6 +130,23 @@ PIN_HEADROOM = 1.0
 # nodes) routed; 2,050 pins on 500 tiles failed (one module of 46).  Not a
 # default: pass it (``--pin-headroom``) for designs like those.
 PIN_HEADROOM_MEASURED_42 = 1596 / (400 * 99)
+
+# Output pins on the boundary (the optional ``out_pins`` demand; README
+# "Cuts").  An output pin's static net runs from its partition pin, inside the
+# region, to logic outside it (static logic is not placed in a reconfigurable
+# region, and other regions do not overlap it), so it crosses the region's
+# edge going outward, on a wire of its own: a node carries one net.  The wires
+# that can carry it out are the edge's one-way crossings in the outward
+# direction and its long lines (``routing.one_way_crossings_per_tile``, the
+# figures ``emit.partpin_cut_check`` uses), so a region needs
+#     out_pins <= (north + south + 2 * vertical_either) * columns
+#                 + (east + west + 2 * horizontal_either) * interconnect rows,
+# the top and bottom edges per interconnect column of its span, the sides per
+# interconnect row.  Every column with interconnect tiles counts, a special
+# column's too: counting wires a module cannot use only loosens the bound.  It
+# is exact apart from the static design's own use of those wires, which the
+# floorplanner does not know.  Inputs give no such bound: one static net can
+# feed any number of input pins.
 
 
 def slice_demand(d):
@@ -159,6 +182,42 @@ def pin_capacity(device, cols, rows, pins, pin_headroom=None):
             "margin": eta * sites / pins if pins else float("inf")}
 
 
+def out_pin_capacity(device, cols, rows, out_pins):
+    """The interconnect wires that leave a region covering columns ``cols`` x
+    clock-region rows ``rows``: ``wires`` (the one-way crossings of its edge
+    going outward, with the long lines: north across the top and south
+    across the bottom per interconnect column, east and west across the
+    sides per interconnect row), the edge's interconnect ``cols`` and
+    ``rows``, and ``margin`` = wires / out_pins (the solver keeps it >= 1)."""
+    rt, ow = _one_way(device)
+    xcols = sum(1 for c in cols if str(c) in rt["int_tile_types"])
+    yrows = rt["int_tiles_per_cell"] * len(rows)
+    wires = _out_per_col(ow) * xcols + _out_per_row(ow) * yrows
+    return {"wires": wires, "cols": xcols, "rows": yrows,
+            "margin": wires / out_pins if out_pins else float("inf")}
+
+
+def _out_per_col(ow):
+    # the top edge's northward wires and the bottom edge's southward ones,
+    # each edge with its long lines
+    return ow["north"] + ow["south"] + 2 * ow["vertical_either"]
+
+
+def _out_per_row(ow):
+    return ow["east"] + ow["west"] + 2 * ow["horizontal_either"]
+
+
+def _one_way(device):
+    rt = device.raw.get("routing") or {}
+    ow = rt.get("one_way_crossings_per_tile")
+    if not ow or "int_tile_types" not in rt:
+        raise ValueError("an 'out_pins' demand needs the device model's "
+                         "one-way crossings (routing.one_way_crossings_per_tile:"
+                         " tools/probe_geometry.tcl section 5 + "
+                         "tools/build_device_model.py)")
+    return rt, ow
+
+
 def _routing(device):
     rt = device.raw.get("routing")
     if not rt:
@@ -175,7 +234,8 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
     """Floorplan the regions in ``demands`` on ``device``.
 
     demands: dict name -> {"lut": int, "ff": int, "bram": int, "dsp": int
-             [, "slices": int][, "pins": int]} (bram in RAMB18 units; slices
+             [, "slices": int][, "pins": int][, "out_pins": int]} (bram in
+             RAMB18 units; slices
              = measured occupied slices, defaulting to the optimistic
              ceil(lut/4) floor when absent -- see ``slice_demand``; pins =
              the region's partition pins, one per bit of its ports, which
@@ -183,6 +243,11 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
              derate or headroom).  A region without ``pins``
              (or with 0) gets no routability constraint, and a solve with no
              ``pins`` anywhere builds exactly the model it always did.
+             out_pins = the region's output pins whose nets reach logic
+             outside it (an output nothing outside reads needs no wire out),
+             which adds the boundary constraint (``out_pin_capacity``,
+             exact, no headroom); at most ``pins`` when both are given.
+             Without ``out_pins`` (or with 0) nothing is added.
     pin_headroom: the fraction of a region's partition-pin sites the
              solver lets its pins use.  Default PIN_HEADROOM = 1.0, the exact,
              necessary-condition bound; PIN_HEADROOM_MEASURED_42 is the
@@ -236,6 +301,11 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
     not solved to proven optimality.
     """
     regions = list(demands.keys())
+    for i in regions:
+        o, p = demands[i].get("out_pins") or 0, demands[i].get("pins") or 0
+        if o and p and o > p:
+            raise ValueError("region %r: %d out_pins exceed its %d pins"
+                             % (i, o, p))
     xs = device.xs
     nrows = device.nrows
     pc = device.per_cell
@@ -403,6 +473,15 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
                         for c in xs if cols[c]["type"] in types
                         for r in range(nrows) if cell_ok(c, r))
             h.addConstr(eta * rt["wires_per_tile"] * tiles >= pins)
+        # output pins on the boundary (out_pin_capacity): only for a region
+        # whose demand names its out_pins
+        outs = d.get("out_pins") or 0
+        if outs:
+            rt, ow = _one_way(device)
+            xcols = sum(cov[i][c] for c in xs if str(c) in rt["int_tile_types"])
+            yrows = rt["int_tiles_per_cell"] * sum(row[i][r] for r in range(nrows))
+            h.addConstr(_out_per_col(ow) * xcols + _out_per_row(ow) * yrows
+                        >= outs)
         # hb: BRAM presence per row (content-pad accounting)
         for c in xs:
             if cols[c]["type"] == "BRAM":
@@ -608,6 +687,13 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             out["regions"][i].update({
                 "pins": pins, "pin_tiles": pcap["tiles"],
                 "pin_sites": pcap["sites"], "pin_margin": pcap["margin"]})
+        if demands[i].get("out_pins"):
+            # the wires leaving the solved rectangle (margin >= 1)
+            outs = demands[i]["out_pins"]
+            ocap = out_pin_capacity(device, ccols, rrows, outs)
+            out["regions"][i].update({
+                "out_pins": outs, "out_wires": ocap["wires"],
+                "out_margin": ocap["margin"]})
         if wl_active:
             # centroid reported in device (col_x, row) units -- cy is stored
             # scaled internally, so unscale the row back for reporting.

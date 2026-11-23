@@ -12,6 +12,15 @@ device model for other 7-series parts.
   form: pins <= pin_headroom x routing nodes of the region's
   module-routable interconnect tiles (99 per tile, probed).  It is exact,
   a necessary condition, at headroom 1.  README "Partition pins".
+- **`out_pins` demand** (CSV column 8, optional): the region's output pins
+  whose nets reach logic outside it.  Each needs a wire of its own leaving
+  the region, so the solver keeps `out_pins` <= the one-way wires crossing
+  the region's edge outward, with the long lines
+  (`milp.out_pin_capacity`; on xc7z020 226 per interconnect column, top
+  and bottom, plus 136 per interconnect row, the sides).  Exact, with no
+  headroom: a necessary condition.  At most `pins` when both are given.
+  It never binds on the measured regions (4.4 x or more their pins).
+  README "Cuts".
 - **`--pin-headroom`** (default 1.0, `milp.PIN_HEADROOM`: the exact bound).
   `milp.PIN_HEADROOM_MEASURED_42` = 0.0403 is the fraction of those sites
   Vivado 2019.1 used without failing on 42 regions of four designs built on
@@ -47,9 +56,10 @@ device model for other 7-series parts.
   SLICEL per clock-region row Vivado prohibits, [Constraints 18-993]).
   Solves whose regions cover x=33 can change; every recorded optimum in the
   test suite is unchanged.
-- The demands CSV takes 5 to 7 fields.
+- The demands CSV takes 5 to 8 fields.
 
 ### Unchanged
 
-- A solve with no `pins` builds the same model as before apart from the
-  x=33 correction (its capacity rows; byte-identical otherwise).
+- A solve with no `pins` and no `out_pins` builds the same model as before
+  apart from the x=33 correction (its capacity rows; byte-identical
+  otherwise).
