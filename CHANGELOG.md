@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (proposed; not tagged)
+## 0.2.0 (2026-11-23)
 
 Partition-pin routability, special columns that cost a CLB column, and the
 device model for other 7-series parts.
