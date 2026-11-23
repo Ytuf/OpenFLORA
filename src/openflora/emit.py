@@ -99,12 +99,15 @@ def xdc_text(regions, cells=None, reset_after_reconfig=True,
     return "\n".join(out)
 
 
-def partpin_tiles(device, cols, rows, trim=1):
+def partpin_tiles(device, cols, rows, trim=0):
     """The interconnect tiles a region's partition pins may take, row by row:
     the region's module-routable columns (less the CLB columns covered
-    special columns cost) over its interconnect rows, less ``trim`` rows at
-    the region's top and bottom edge (two pins in one edge tile left a node
-    overlap, RFP's GA build, 2026-11-18)."""
+    special columns cost) over its interconnect rows -- every one by default.
+    ``trim`` > 0 leaves that many rows free at the region's top and bottom
+    edge: an optional, stricter form of UG909's placer rule (it "attempts to
+    spread the partition pins, minimizing the number of partition pins per
+    interconnect along the edges"), whose only direct evidence is one build
+    where two pins in an edge tile left a node overlap (2026-11-18)."""
     rt = device.raw["routing"]
     types = rt["module_routing_types"]
     n = rt["int_tiles_per_cell"]
@@ -118,20 +121,21 @@ def partpin_tiles(device, cols, rows, trim=1):
             for y in range(y0, y1 + 1) for c in pcols]
 
 
-def partpin_plan(device, cols, rows, pins, pairs=(), per_tile=4, trim=1):
+def partpin_plan(device, cols, rows, pins, pairs=(), per_tile=5, trim=0):
     """A partition-pin plan for one region: [(pin, INT tile)].
 
     pins: the region's partition pins (port bits; clock and other global
     pins excluded), in a stable order; pairs: (in_pin, out_pin) couples to
     put in one tile -- a module that copies the in-pin to the out-pin then
     wires them locally, whatever the static design wants.  Pins are spread
-    evenly over ``partpin_tiles`` at no more than ``per_tile`` a tile
-    (Vivado's own target is PARTPIN_SPREADING, default 5).  Raises
-    ValueError when the region cannot take the pins.
+    evenly over ``partpin_tiles`` (``trim`` rows left free at each edge,
+    none by default) at no more than ``per_tile`` a tile -- by default 5,
+    Vivado's own spreading target (the Pblock property PARTPIN_SPREADING,
+    5 in 2019.1).  Raises ValueError when the region cannot take the pins.
 
-    Measured (README "Pin placement"): in a 4-column, 3-row region a plan of
-    at most 4 a tile routed 12 of 16 modules, 5 of which failed there with
-    Vivado's own pins; a plan of up to 8 a tile failed for crowding.  The
+    Measured (README "Pin placement"): at most 5 a tile routed 33 of 33
+    modules in two 1-row regions; at most 4 a tile routed in 4-column,
+    3-row regions; a plan of up to 8 a tile failed for crowding.  The
     solver does not count on a plan."""
     tiles = partpin_tiles(device, cols, rows, trim)
     names = list(pins)

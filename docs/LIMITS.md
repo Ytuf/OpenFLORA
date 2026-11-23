@@ -176,6 +176,9 @@ flow" is the Vivado 2019.1 DFX flow that produced its measured partials.
       that worked for most modules is a pin plan with the pairs
       co-located (README "Pin placement"); it makes the paired cut demand
       exactly 0.  Computed and memory bits still wire across the region.
+      The plan's defaults (at most 5 pins a tile, Vivado's own spreading
+      target; no edge trim) were not tuned on builds.  The builds only
+      bracket them: at most 5 a tile routed, up to 8 failed.
     * **Location.**  The same shape routes in one place and fails in
       another, depending on where the static design puts the pins.
     * **The region boundary and the static side.**  Static nets that

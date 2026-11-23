@@ -19,9 +19,11 @@ device model for other 7-series parts.
   value a caller may pass for designs like those, not a default.  It
   covers crowded pins only; pass-through wiring between pins Vivado places
   apart is not modeled (docs/LIMITS.md item 10).
-- **Pin plans** (`emit.partpin_plan`, `--pin-plan N --pins-file F`): the
+- **Pin plans** (`emit.partpin_plan`, `--pin-plan [N] --pins-file F`): the
   XDC can place each region's partition pins (HD.PARTPIN_LOCS), each
-  in/out pair in one interconnect tile, at most N a tile.
+  in/out pair in one interconnect tile, at most N a tile.  N defaults to 5,
+  Vivado's own spreading target (PARTPIN_SPREADING).  `--pin-plan-trim R`
+  (`trim`, default 0) optionally leaves R rows free at each edge.
   `emit.partpin_cut_demand` gives a fixed plan's exact cut demand by
   direction (0 for these plans), and `emit.partpin_cut_check` checks it
   against the one-way capacity.  No solver constraint changes with a plan.

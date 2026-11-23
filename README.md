@@ -83,7 +83,7 @@ first hardware build: +1.1 % netlist growth, plus placer packing
 limits).  `--static-bram N` reserves N RAMB18 for the static design,
 `--forbid-specials` keeps regions off the clock-spine and config
 columns, and `--cell rp0=path/to/inst` binds cells in the emitted XDC.
-`--pin-plan N --pins-file pins.csv` also writes a partition-pin plan
+`--pin-plan [N] --pins-file pins.csv` also writes a partition-pin plan
 into the XDC (README "Pin placement").
 There is also `openflora parse-bit partial.bit`, which prints the
 FAR/FDRI frame accounting of an existing 7-series partial bitstream.
@@ -350,15 +350,27 @@ remedy for congestion around them is to place them yourself
 (HD.PARTPIN_LOCS, one interconnect tile per pin).  OpenFLORA can write
 such a plan for the regions it returns:
 
-    openflora plan --csv demands.csv --pin-plan 5 --pins-file pins.csv \
+    openflora plan --csv demands.csv --pin-plan --pins-file pins.csv \
         --cell rp0=top/rp0_inst --cell rp1=top/rp1_inst --out-xdc fp.xdc
 
 * `pins.csv` has one row per pin, `region,pin[,pair]`.  `pair` names
   the pin to put in the same tile, such as a slot's out-pin next to its
   in-pin.
 * `emit.partpin_plan` spreads the pairs and single pins evenly over the
-  region's pin tiles: every interconnect tile of a pin column, less one
-  row at the top and bottom edge.  It puts at most N pins in a tile.
+  region's pin tiles, every interconnect tile of a pin column, and puts at
+  most N pins in a tile.
+* **N defaults to 5,** Vivado's own spreading target (the Pblock property
+  PARTPIN_SPREADING, 5 in 2019.1, read with `report_property`).  So
+  `--pin-plan` alone needs no routing density; a caller may pass another
+  N.
+* **The edge trim is optional and off by default.**  UG909 says the
+  placer "attempts to spread the partition pins, minimizing the number
+  of partition pins per interconnect along the edges, and increasing the
+  PartPin density towards the middle of the Pblock" [7].
+  `--pin-plan-trim R` (`trim=R`) is a stricter form of that: no pins at
+  all in the R interconnect rows at each edge.  Its only direct evidence
+  is one build where two pins in an edge tile left a node overlap
+  (2026-11-18).
 * With pairs co-located, the plan's interior cut demand from those pairs
   is 0, exactly (above).
 * The solver sizes the regions the same way with or without a plan: no
@@ -375,8 +387,15 @@ Measured (GA b666):
 
 Pairing removes the declared pairs' cut demand, and with it most of the
 width failures in E2, but not the wiring of computed or memory bits.
-Use a plan when a returned region fails for width: at most 4 or 5 a
-tile, with the pairs co-located.  The head build must apply the XDC, and
+Use a plan when a returned region fails for width, with the pairs
+co-located.  The measured evidence behind the per-tile limit:
+* at most 5 a tile routed 33 of 33 modules (E3, with the edge rows
+  trimmed);
+* at most 4 a tile routed in the tall regions (E2, and UD in the report);
+* up to 8 a tile failed for crowding (E1).
+
+That evidence is not the source of the default: the default is Vivado's
+own target.  The head build must apply the XDC, and
 every module then routes to the planned pins.
 
 ### Special columns that cost a CLB column

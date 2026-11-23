@@ -91,10 +91,12 @@ def read_pins_csv(path):
 def cmd_plan(args):
     dev = device.load_device(args.device)
     demands = read_demands_csv(args.csv)
+    if args.pin_plan_trim < 0:
+        raise SystemExit("--pin-plan-trim R needs R >= 0")
     if args.pin_plan is not None and args.pin_plan < 1:
         raise SystemExit("--pin-plan N needs N >= 1 (pins per tile)")
     if args.pins_file and not args.pin_plan:
-        raise SystemExit("--pins-file needs --pin-plan N (pins per tile)")
+        raise SystemExit("--pins-file needs --pin-plan [N] (pins per tile)")
     result = milp.solve(dev, demands, objective=args.objective,
                         derate=args.derate, headroom=args.headroom,
                         forbid_specials=args.forbid_specials,
@@ -125,7 +127,8 @@ def cmd_plan(args):
                     raise SystemExit("--pins-file region %r has no --cell" % name)
                 r = result["regions"][name]
                 plan = emit.partpin_plan(dev, r["cols"], r["rows"], pins, pairs,
-                                         per_tile=args.pin_plan)
+                                         per_tile=args.pin_plan,
+                                         trim=args.pin_plan_trim)
                 text += "\n".join(["# partition-pin plan: %s" % name]
                                   + emit.partpin_xdc(cells[name], plan)) + "\n"
         with open(args.out_xdc, "w") as f:
@@ -196,12 +199,19 @@ def main(argv=None):
                         "measured on 42 xc7z020 / Vivado 2019.1 regions of "
                         "designs that register every port bit behind wide "
                         "slot interfaces (README 'Partition pins')")
-    p.add_argument("--pin-plan", type=int, default=None, metavar="N",
+    p.add_argument("--pin-plan", type=int, nargs="?", const=5, default=None,
+                   metavar="N",
                    help="with --pins-file and --cell, the XDC also places the "
                         "regions' partition pins (HD.PARTPIN_LOCS), at most N "
-                        "per interconnect tile, each pair in one tile.  The "
-                        "solver does not count on the plan (README 'Pin "
-                        "placement')")
+                        "per interconnect tile (default 5, Vivado's own "
+                        "spreading target PARTPIN_SPREADING), each pair in "
+                        "one tile.  The solver does not count on the plan "
+                        "(README 'Pin placement')")
+    p.add_argument("--pin-plan-trim", type=int, default=0, metavar="R",
+                   help="leave R interconnect rows free of pins at each "
+                        "region's top and bottom edge (default 0: every "
+                        "tile may take a pin); a stricter, optional form of "
+                        "UG909's edge spreading")
     p.add_argument("--pins-file",
                    help="region,pin[,pair] rows: the regions' partition pins "
                         "for --pin-plan")
