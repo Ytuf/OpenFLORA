@@ -182,9 +182,39 @@ def test_device_routing_facts(dev):
 
 def test_special_column_interconnect_does_not_count(fp, dev):
     # tiles 30..35 cover the clock-spine column 33: its interconnect stays
-    # static, so the region has 5 module-routable columns, not 6
+    # static, and the CLB column 32 it costs (special_splits) takes no pins
+    # (Vivado placed none on INT_L_X32 in five GA builds covering x=33), so
+    # the region has 4 pin columns, not 6 (0.2.0 counted 5)
     r = fp.milp.pin_capacity(dev, list(range(30, 36)), [1], GA_PINS)
-    assert (r["tiles"], r["cols"]) == (250, 5)
+    assert (r["tiles"], r["cols"]) == (200, 4)
+
+
+@pytest.mark.parametrize("c0,c1,rows", [(30, 35, [1]), (28, 35, [0]), (40, 51, [0]),
+                                        (26, 37, [0, 1]), (44, 51, [0]), (56, 61, [0])])
+def test_pin_sites_are_the_plan_tiles(fp, dev, c0, c1, rows):
+    """The solver's pin sites lie on exactly the tiles a pin plan may use."""
+    cols = list(range(c0, c1 + 1))
+    r = fp.milp.pin_capacity(dev, cols, rows, 1)
+    assert r["tiles"] == len(fp.emit.partpin_tiles(dev, cols, rows))
+
+
+def test_solver_leaves_the_lost_column_out(fp, dev):
+    """A region confined to x 24-37, row 0 (covering x=33, which costs column
+    32; a DSP and a BRAM column): twelve pin columns, 600 tiles, so at the
+    measured headroom 2,390 pins fit and 2,400 do not (0.2.0 counted
+    thirteen, 650 tiles, and took 2,400)."""
+    eta = fp.milp.PIN_HEADROOM_MEASURED_42
+    window = set((c, 0) for c in range(24, 38))
+    forbid = [(c, r) for c in dev.xs for r in range(dev.nrows) if (c, r) not in window]
+    d = {"lut": 100, "ff": 100, "bram": 0, "dsp": 0, "slices": 50}
+    res = fp.milp.solve(dev, {"rp0": dict(d, pins=2390)}, objective="wr",
+                        forbid_cells=forbid, pin_headroom=eta)
+    assert res["regions"]["rp0"]["pin_tiles"] == 600
+    assert fp.milp.pin_capacity(dev, list(range(24, 38)), [0], 2400,
+                                pin_headroom=eta)["margin"] < 1 < 0.0403 * 99 * 650 / 2400
+    with pytest.raises(RuntimeError):
+        fp.milp.solve(dev, {"rp0": dict(d, pins=2400)}, objective="wr",
+                      forbid_cells=forbid, pin_headroom=eta)
     # a BRAM and a DSP column's interconnect do count
     r = fp.milp.pin_capacity(dev, list(range(56, 62)), [0], GA_PINS)
     assert (r["tiles"], r["cols"]) == (300, 6)

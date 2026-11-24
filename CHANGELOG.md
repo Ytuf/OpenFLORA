@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.1 (2026-11-23)
+
+### Fixed
+
+- **Partition-pin sites of a region covering a special column that costs a
+  CLB column** (xc7z020's x=33, which costs column 32).  0.2.0's solver and
+  `milp.pin_capacity` still counted that column's interconnect as pin sites;
+  the README and docs/LIMITS.md say it is left out, `emit.partpin_tiles`
+  left it out, and Vivado placed no partition pin on INT_L_X32 in five GA
+  builds whose regions covered x=33.  Now both leave it out, so a region's
+  pin sites are exactly the tiles a pin plan may use (tested), and a solve
+  over x=33 needs one more pin column.  On a GA build the 0.2.0 count let
+  through a region holding 4.03 pins a tile against the measured 3.99; one
+  module of 33 failed to route there.  The measured headroom (0.0403) and
+  every measured region's verdict are unchanged.
+
 ## 0.2.0 (2026-11-23)
 
 Partition-pin routability, special columns that cost a CLB column, and the

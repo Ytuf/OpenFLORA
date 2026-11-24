@@ -7,4 +7,4 @@ See the README for provenance and credits.
 """
 from . import bitparse, cli, device, emit, frames, milp  # noqa: F401
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

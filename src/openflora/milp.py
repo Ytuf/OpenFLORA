@@ -114,7 +114,9 @@ DEMAND_KEYS = ("lut", "ff", "bram", "dsp", "slices", "pins", "out_pins")
 # an interconnect tile inside the region; a node carries one net, so a region
 # holds at most one pin per routing node of its module-routable interconnect
 # tiles (CLB, BRAM and DSP columns; a special column's tiles have no sites, so
-# a site-range pblock does not own them).  ``wires_per_tile`` in the device
+# a site-range pblock does not own them, and the CLB column a covered special
+# costs (``special_splits``) takes no pins either: Vivado placed none on
+# INT_L_X32 in five GA builds whose regions covered x=33).  ``wires_per_tile`` in the device
 # model's ``routing`` section is that count, probed from the part.  The solver
 # enforces
 #     pins <= pin_headroom * wires_per_tile * tiles,
@@ -173,7 +175,8 @@ def pin_capacity(device, cols, rows, pins, pin_headroom=None):
     rt = _routing(device)
     eta = PIN_HEADROOM if pin_headroom is None else pin_headroom
     types = rt["module_routing_types"]
-    rcols = [c for c in cols if device.col_type(c) in types]
+    lost = set(c for x in cols for c in device.special_splits.get(x, ()))
+    rcols = [c for c in cols if device.col_type(c) in types and c not in lost]
     tiles = rt["int_tiles_per_cell"] * sum(1 for c in rcols for r in rows
                                            if device.cell_ok(c, r))
     sites = rt["wires_per_tile"] * tiles
@@ -472,6 +475,13 @@ def solve(device, demands, objective="frames", derate=1.0, headroom=0.93,
             tiles = sum(rt["int_tiles_per_cell"] * w[i][(c, r)]
                         for c in xs if cols[c]["type"] in types
                         for r in range(nrows) if cell_ok(c, r))
+            # less the CLB columns covered specials cost, as in cap(): the
+            # pair rule covers such a column whenever its special is
+            for x, lost in device.special_splits.items():
+                for c in lost:
+                    tiles = tiles - sum(rt["int_tiles_per_cell"] * w[i][(x, r)]
+                                        for r in range(nrows)
+                                        if cell_ok(x, r) and cell_ok(c, r))
             h.addConstr(eta * rt["wires_per_tile"] * tiles >= pins)
         # output pins on the boundary (out_pin_capacity): only for a region
         # whose demand names its out_pins
